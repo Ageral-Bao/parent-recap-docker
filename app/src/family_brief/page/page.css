@@ -1,0 +1,685 @@
+/* The "Setup proposal" prototype's look, in the system font: the page loads nothing else. */
+:root {
+  --bg: #EDF0F3;
+  --panel: #FFFFFF;
+  --panel-2: #F5F7F9;
+  --ink: #12161B;
+  --ink-2: #39414B;
+  --muted: #6A7380;
+  --line: #D8DDE4;
+  --accent: #C8731A;
+  --accent-soft: #FBEAD5;
+  --accent-line: #E2A65B;
+  --bad: #B8392B;
+  --bad-soft: #F8E1DD;
+  --good: #2C7A57;
+  --good-soft: #E3F1EA;
+  --tick: #2E9A5A;
+  --chip: #E3E7EC;
+  --chip-on: #12161B;
+  --chip-on-ink: #FFFFFF;
+  --shadow: 0 1px 0 rgba(18, 22, 27, .04), 0 12px 32px -18px rgba(18, 22, 27, .35);
+  --sys: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue",
+    Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+
+/* Hidden stays hidden, whatever display a class gives the element. */
+[hidden] { display: none !important; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.5 var(--sys);
+  -webkit-font-smoothing: antialiased;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 20px 24px 12px;
+}
+
+.product { font-weight: 700; font-size: 15px; letter-spacing: -0.01em; }
+
+.switch select {
+  font: inherit;
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--ink);
+}
+
+.hidden-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+main {
+  display: grid;
+  gap: 16px;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 0 24px 48px;
+}
+
+/* Each screen is a white card on the page. */
+main > section {
+  padding: 28px 32px;
+  background: var(--panel);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+
+h1 {
+  font-size: 26px;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  margin: 0 0 8px;
+}
+
+h2 {
+  font-size: 18px;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  margin: 8px 0;
+}
+
+p { margin: 0 0 12px; }
+
+.note { color: var(--muted); margin: 0 0 24px; }
+
+.hint { color: var(--muted); font-size: 13px; margin: 0; }
+
+.ready { font-weight: 600; }
+
+/* ── The phase strip: six boxes in a row, the current one dark, done ones with a green tick. */
+
+.phases {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 6px;
+  padding: 0;
+  margin: 0;
+}
+
+.phases li {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 7px 9px;
+  font-size: 12.5px;
+  line-height: 1.3;
+  color: var(--muted);
+}
+
+.phases b { font-weight: 600; }
+
+.phases li[aria-current="step"] {
+  border-color: var(--chip-on);
+  background: var(--chip-on);
+  color: var(--chip-on-ink);
+}
+
+.phases li.done { color: var(--ink-2); }
+
+.phases li.done b::after { content: " ✓"; color: var(--good); }
+
+/* ── Choices: each option a box; a chosen one is warm, not green. */
+
+fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0 0 24px;
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+legend { font-weight: 600; font-size: 15px; margin-bottom: 8px; padding: 0; }
+
+fieldset label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 14px;
+  border: 1px solid #D9DDE3;
+  border-radius: 10px;
+  background: #F6F7F9;
+  cursor: pointer;
+  font-size: 15px;
+}
+
+fieldset label:has(input:checked) {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+
+input[type="radio"],
+input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; margin: 0; flex: none; }
+
+/* ── Buttons are pills; the main action is dark. */
+
+button {
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  min-height: 38px;
+  padding: 8px 18px;
+  border: 1px solid var(--chip-on);
+  border-radius: 999px;
+  background: var(--chip-on);
+  color: var(--chip-on-ink);
+  cursor: pointer;
+}
+
+button.secondary {
+  border-color: var(--line);
+  background: var(--panel);
+  color: var(--ink);
+}
+
+button.secondary:hover { background: var(--panel-2); }
+
+button:focus-visible,
+.field input:focus-visible,
+.field select:focus-visible,
+.switch select:focus-visible,
+input[type="radio"]:focus-visible,
+input[type="checkbox"]:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+button:disabled { opacity: 0.45; cursor: default; }
+
+button.link {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink-2);
+  font-weight: 400;
+  font-size: 13px;
+  text-decoration: underline;
+}
+
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+
+/* ── Fields */
+
+.details { display: grid; gap: 12px; }
+
+.field { display: grid; gap: 4px; }
+
+.field label,
+fieldset .field label {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: default;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.field input, .field select {
+  font: inherit;
+  font-size: 15px;
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--ink);
+}
+
+.field input:disabled { background: var(--panel-2); }
+
+.field input[aria-invalid] { border-color: var(--bad); }
+
+/* What a plan an AI needs, quiet beside its name. */
+.plan { color: var(--muted); }
+
+/* A Recipient: their address, the language they read, and the way to take the row away. */
+.recipient {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(6rem, 8rem) auto;
+  gap: 8px;
+  align-items: center;
+  margin-block-end: 8px;
+}
+
+.recipient input, .recipient select {
+  font: inherit;
+  font-size: 15px;
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--ink);
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.recipient input[aria-invalid] { border-color: var(--bad); }
+
+.recipient input:focus-visible,
+.recipient select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.recipient-remove { padding-inline: 4px; }
+
+/* ── Welcome's "Have these ready": a quiet box, folded until the parent opens it. */
+
+.have-ready {
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.have-ready summary { font-weight: 600; cursor: pointer; }
+
+.have-ready dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 14px;
+  margin: 10px 0 12px;
+}
+
+.have-ready dt { font-weight: 600; }
+
+.have-ready dd { margin: 0; color: var(--ink-2); }
+
+/* ── "More": background a step doesn't need, folded under one small line. */
+
+.more { margin: 12px 0 0; }
+
+.more summary { cursor: pointer; color: var(--ink-2); font-size: 13px; }
+
+.more p, .more ol { font-size: 13px; color: var(--muted); margin: 8px 0 0; }
+
+.more ol { padding-left: 20px; }
+
+/* Gmail's three steps, the first a button. */
+.steps { display: grid; gap: 6px; margin: 0 0 16px; padding-left: 20px; }
+
+.details > .steps { margin: 0; }
+
+/* ── What a step said: a quiet box, green once it's done, red-tinted when it failed. */
+
+.status {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+  color: var(--ink-2);
+}
+
+.status p { margin: 0; }
+
+.status button { margin-top: 10px; margin-right: 6px; }
+
+.status[data-result="ready"],
+.status[data-result="gmail.saved"],
+.status[data-result="wilma.signed-in"],
+.status[data-result="claude.saved"],
+.status[data-result="gateway.saved"],
+.status[data-result="myclub.saved"],
+.status[data-result="whatsapp.paired"],
+.status[data-result="health.ok"],
+.status[data-result="codex.signed-in"],
+.status[data-result="finish.done"] {
+  border-color: transparent;
+  background: var(--good-soft);
+  color: var(--good);
+}
+
+.status.fail {
+  border-color: transparent;
+  background: var(--bad-soft);
+  color: #8E2A1F;
+}
+
+.status .actions:not(:has(button:not([hidden]))) { display: none; }
+
+.status .actions button { margin-top: 10px; margin-right: 0; }
+
+.status code {
+  display: block;
+  margin-top: 8px;
+  font: 13px/1.4 var(--mono);
+  overflow-wrap: anywhere;
+}
+
+/* Why a step failed, small, folded as "Details for the Parent Recap team", for a photo of the
+   screen to carry, with its Copy button. A check on Check and Finish that isn't OK has its own. */
+.status .why, .checks .why {
+  margin-top: 10px;
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
+.status .why summary, .checks .why summary { cursor: pointer; }
+
+.status .why .hint {
+  margin: 0;
+}
+
+.status .why button, .checks .why button {
+  margin-top: 6px;
+}
+
+.status .reason, .checks .reason {
+  margin: 8px 0 0;
+  font: 11px/1.4 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.install {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.install code {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--ink);
+}
+
+.install button { margin-top: 0; flex: none; }
+
+.error {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+
+/* ── The Source list: ○ to do, ◐ the one being worked on, ✓ done. */
+
+.sources {
+  list-style: none;
+  display: grid;
+  gap: 6px;
+  padding: 0;
+  margin: 0 0 24px;
+}
+
+.sources button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--ink);
+  font-weight: 500;
+  text-align: left;
+}
+
+.sources button::before { content: "○"; color: #CFD3D9; width: 1em; text-align: center; }
+
+.sources li[aria-current="step"] button { border-color: var(--accent-line); background: var(--accent-soft); }
+
+.sources li[aria-current="step"] button::before { content: "◐"; color: var(--accent); }
+
+.sources li[data-status="done"] button::before { content: "✓"; color: var(--tick); font-weight: 700; }
+
+.sources .state { color: var(--muted); font-size: 13px; font-weight: 400; }
+
+/* The hand-off once a Source is connected: which one is next. */
+.handoff {
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--good-soft);
+  color: var(--good);
+  font-weight: 500;
+}
+
+.sources li[data-status="done"] .state { color: var(--good); font-weight: 600; }
+
+.source { margin: 0 0 16px; }
+
+/* Where a step's result goes, under what it's about. */
+.slot:empty { display: none; }
+
+#wilma-towns, #source-myclub fieldset { margin: 0; }
+
+/* MyClub's "Where to find the link" sits between its button and its form. */
+#source-myclub > .more { margin: 0 0 16px; }
+
+/* Adding a Kid, under the link form once there's a Kid to link: set apart from it. */
+#myclub-form:not([hidden]) + #myclub-kid-form {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.kids, .groups { margin: 8px 0 0; padding-left: 20px; }
+
+.towns:empty { display: none; }
+
+/* A long name wraps beside its radio button, which stays by the first line. */
+.towns label { align-items: flex-start; }
+
+.towns input { margin-top: 1px; margin-top: calc((1lh - 16px) / 2); }
+
+.towns .name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+
+.towns .town { color: var(--muted); font-size: 13px; margin-left: auto; }
+
+
+/* Why the town box is still greyed out, right under it, turning while the wilma CLI installs. */
+.wait { font-size: 13px; margin: 6px 0 4px; }
+
+.wait.busy::before {
+  animation: turn 0.8s linear infinite;
+  border: 2px solid var(--muted);
+  border-radius: 50%;
+  border-right-color: transparent;
+  content: "";
+  display: inline-block;
+  height: 10px;
+  margin-right: 6px;
+  vertical-align: -1px;
+  width: 10px;
+}
+
+@keyframes turn { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .wait.busy::before { animation: none; }
+}
+
+/* MyClub's own page, with what to click boxed and numbered in the picture as in the steps. */
+.screenshot { margin: 12px 0 0; }
+
+.screenshot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+#source-myclub .more ol, #source-myclub .more p { color: var(--ink-2); }
+
+/* ── WhatsApp's QR code, drawn on the page: black on white inside its quiet zone, large enough
+   for a phone to read off the screen. */
+
+.whatsapp-steps { margin: 0 0 12px; padding-left: 22px; }
+
+.qr { margin: 0 0 12px; }
+
+.qr svg {
+  display: block;
+  width: 240px;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+/* ── Working: what's been read, ✓ once read, ◐ while it reads. */
+
+.working li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.working li::before { content: "✓"; color: var(--tick); font-weight: 700; width: 1em; text-align: center; }
+
+.working li[data-status="to-do"]::before { content: "○"; color: #CFD3D9; }
+
+.working li[aria-current="step"] { border-color: var(--accent-line); background: var(--accent-soft); }
+
+.working li[aria-current="step"]::before { content: "◐"; color: var(--accent); }
+
+#working-bar { display: block; width: 100%; margin: 0 0 16px; accent-color: var(--accent); }
+
+/* ── Check: lists to tick, each Kid with the name the Brief calls them beside. */
+
+.ticks { display: grid; gap: 8px; }
+
+.ticks:empty { display: none; }
+
+fieldset label.all { background: var(--panel); }
+
+.kid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; align-items: center; }
+
+.kid .name { overflow-wrap: anywhere; }
+
+.kid input.everyday, .add .field input {
+  font: inherit;
+  font-size: 15px;
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--ink);
+}
+
+.add { display: flex; align-items: flex-end; gap: 10px; }
+
+.add-open { margin: 0; }
+
+.add .field { flex: 1; }
+
+.checks { list-style: none; display: grid; gap: 8px; padding: 0; margin: 10px 0 0; }
+
+.checks li::before { content: "✓ "; color: var(--good); font-weight: 700; }
+
+.checks li[data-status="warn"]::before { content: "! "; color: var(--accent); }
+
+.checks li[data-status="fail"]::before { content: "✗ "; color: #B3261E; }
+
+.checks .state { color: var(--muted); font-size: 13px; }
+
+.checks .hint { margin: 2px 0 0; }
+
+/* The step that fixes it, under what to do, such as skipping the Source for now. */
+.checks li > button { display: block; margin-top: 8px; }
+
+.status[data-result="health.checking"] { border-color: var(--accent-line); }
+
+/* ── First Brief: the email as it will look in the inbox, on white */
+
+iframe.brief {
+  display: block;
+  width: 100%;
+  height: 32rem;
+  margin: 14px 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #FFFFFF;
+}
+
+#brief-sent { margin-top: 14px; }
+
+/* ── Finish: the outcome checklist, each ticked once it's true */
+
+#finish-install { display: grid; gap: 10px; justify-items: start; margin-bottom: 14px; }
+
+#finish-status p + p { margin-top: 6px; }
+
+.status[data-result="finish.installing"],
+.status[data-result="finish.checking"] { border-color: var(--accent-line); }
+
+#finish-checklist { margin-bottom: 14px; }
+
+#finish .more { margin-top: 8px; }
+
+/* A health check that isn't OK: its checks, each with what to do, under it. */
+#finish-checklist .checks { margin: 8px 0 0 1.2em; }
+
+#finish-stopped, #finish-closed { margin-bottom: 14px; }
+
+/* What Turn it on is about to do: not done yet, and no failure. */
+#finish-checklist li[data-status="to-do"]::before { content: "○ "; color: var(--muted); }
+
+/* What the family may come back for later, set apart from setting up. */
+#finish-later { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 16px; }
+
+#finish-later h3 { font-size: 15px; margin: 12px 0 6px; }
+
+/* ── "Stuck? Continue in the chat", one quiet line at the bottom of the step */
+
+.chat { margin-top: 20px; }
+
+.chat > p { margin: 0; }
+
+.chat .status { margin-top: 10px; }
+
+/* ── Phone width: one column, the phase strip in two rows of three. */
+@media (max-width: 600px) {
+  header { padding: 14px 16px 10px; }
+  main { padding: 0 12px 32px; gap: 12px; }
+  main > section { padding: 20px 18px; }
+  h1 { font-size: 24px; }
+  .phases { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  #partner-details { grid-template-columns: minmax(0, 1fr); }
+  .have-ready dl { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .have-ready dd + dt { margin-top: 8px; }
+  .install { flex-direction: column; align-items: stretch; }
+  .install button { align-self: flex-start; }
+  .kid { grid-template-columns: minmax(0, 1fr); }
+}

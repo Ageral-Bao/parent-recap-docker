@@ -1,0 +1,177 @@
+"""The model's reply put in the schema's shape (brief.parse), its calendar events read
+(summarize.extract_calendar_events), and the instructions it is written to."""
+from __future__ import annotations
+
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from family_brief import ai_filter, kid_placeholders
+from family_brief.brief import ActionItem, Brief, Event, Notice, looks_cut_off, parse
+from family_brief.brief_text import TEXT
+from family_brief.languages import FINNISH_TERMS
+from family_brief.summarize import extract_calendar_events, system_prompt
+
+HELSINKI = ZoneInfo("Europe/Helsinki")
+COMPLETE = {"per_kid": [], "calendar_events": [], "message_digest": "ok"}
+
+
+# ── A reply cut off by the model
+
+@pytest.mark.parametrize("reply, repaired, incomplete", [
+    pytest.param({"per_kid": []}, True, True, id="repaired-and-missing-keys"),
+    pytest.param({"per_kid": []}, False, False, id="missing-keys-but-not-repaired"),
+    pytest.param(COMPLETE, True, False, id="repaired-but-complete"),
+    pytest.param({"per_kid": [], "calendar_events": [], "message_digest_cn": "旧"}, True, False,
+                 id="digest-under-its-old-name"),
+])
+def test_a_repaired_reply_missing_a_top_level_key_is_incomplete(reply, repaired, incomplete):
+    assert looks_cut_off(reply, repaired) is incomplete
+
+
+def test_a_reply_that_is_not_an_object_is_an_empty_brief():
+    assert parse(["not", "an", "object"]) == Brief()
+
+
+# ── The Digest
+
+@pytest.mark.parametrize("digest, text", [
+    pytest.param({"Mia": "- 周四远足", "Leo": "- 周三拍班级照", "Eero": " "}, "**Mia**\n- 周四远足\n\n**Leo**\n- 周三拍班级照",
+                 id="dict-by-kid"),
+    pytest.param(["**Mia**\n- 周四远足", "**Leo**\n- 周三拍班级照"], "**Mia**\n- 周四远足\n\n**Leo**\n- 周三拍班级照",
+                 id="list-of-sections"),
+    pytest.param(["- 周四远足", "", "- 周三拍班级照"], "- 周四远足\n- 周三拍班级照", id="list-of-lines"),
+    pytest.param(None, "", id="null"),
+    pytest.param(42, "42", id="number"),
+])
+def test_a_digest_in_any_shape_is_one_text(digest, text):
+    assert parse({**COMPLETE, "message_digest": digest}).digest == text
+
+
+def test_a_digest_under_its_old_name_is_read():
+    assert parse({"message_digest_cn": "旧"}).digest == "旧"
+
+
+# ── per_kid
+
+@pytest.mark.parametrize("per_kid, kids", [
+    pytest.param(None, [], id="null"),
+    pytest.param([{"kid": "Mia"}, "Leo: nothing today", {"kid": "Leo"}], ["Mia", "Leo"], id="stray-string"),
+    pytest.param({"Mia": {"notices": []}, "Leo": {}, "Eero": "nothing"}, ["Mia", "Leo"], id="keyed-by-kid"),
+    pytest.param({"kid": "Mia", "notices": []}, ["Mia"], id="a-lone-entry"),
+    pytest.param([{"kid": None}], [None], id="no-kid"),
+])
+def test_per_kid_is_a_list_of_kid_entries(per_kid, kids):
+    out = parse({**COMPLETE, "per_kid": per_kid}).kids
+
+    assert [k.kid for k in out] == kids
+    assert all(k.notices == [] and k.action_items == [] for k in out)
+
+
+def test_empty_and_odd_items_are_dropped_and_the_rest_kept():
+    kid = {"kid": "Mia",
+           "notices": ["周四远足", {"text": "  "}, None, 42, {"text": ["a", "b"], "refs": ["w-1"]}],
+           "action_items": [{"what": ""}, {"what": "交班费", "by": None, "who": None, "refs": ["g-1"]},
+                            {"what": "签字", "by": "2026-09-28", "who": "妈妈"}]}
+
+    [out] = parse({**COMPLETE, "per_kid": [kid]}).kids
+
+    assert out.notices == [Notice("周四远足"), Notice("42"), Notice("a\nb", refs=["w-1"])]
+    assert out.action_items == [ActionItem("交班费", refs=["g-1"]), ActionItem("签字", "2026-09-28", "妈妈")]
+
+
+def test_what_only_the_program_derives_is_not_read_from_the_reply():
+    [kid] = parse({"per_kid": [{"kid": "Mia", "notices": [
+        {"text": "koe", "refs": ["w-1"], "source": ["wilma"], "verified": True, "legacy": True,
+         "ref_sources": {"w-1": ["wilma"]}}]}]}).kids
+
+    assert kid.notices == [Notice("koe", refs=["w-1"])]
+
+
+def test_a_lone_item_stands_for_a_list_of_it():
+    [out] = parse({**COMPLETE, "per_kid": [{"kid": "Mia", "notices": "带雨衣", "action_items": None}]}).kids
+
+    assert (out.notices, out.action_items) == ([Notice("带雨衣")], [])
+
+
+def test_calendar_events_are_objects_with_text_fields():
+    events = ["周五家长会", {"title": None, "start": "2026-10-01T09:00", "kid": "Mia", "location": ["Nuuksio"],
+                         "refs": ["g-1"], "source": "gmail", "external_id": "made-up"}]
+
+    assert parse({**COMPLETE, "calendar_events": events}).events == \
+        [Event(start="2026-10-01T09:00", kid="Mia", location="Nuuksio", refs=["g-1"])]
+
+
+# ── Calendar events
+
+def events(*evs: Event) -> list:
+    return extract_calendar_events(Brief(events=list(evs)), "Europe/Helsinki", "(untitled)")
+
+
+@pytest.mark.parametrize("start, local", [
+    pytest.param("2026-11-05T09:00:00+03:00", datetime(2026, 11, 5, 9, 0), id="summer-offset-in-winter"),
+    pytest.param("2026-11-05T09:00:00+02:00", datetime(2026, 11, 5, 9, 0), id="winter-offset"),
+    pytest.param("2026-11-05T09:00:00", datetime(2026, 11, 5, 9, 0), id="no-offset"),
+    pytest.param("2026-11-05T07:00:00Z", datetime(2026, 11, 5, 9, 0), id="utc"),
+    pytest.param("2026-07-05T09:00:00+01:00", datetime(2026, 7, 5, 11, 0), id="another-zone"),
+])
+def test_an_events_wall_clock_time_is_kept_unless_another_zone_was_meant(start, local):
+    [ev] = events(Event(title="Koe", start=start))
+
+    assert ev.start == local.replace(tzinfo=HELSINKI) and ev.start.tzinfo == HELSINKI
+    assert not ev.all_day
+
+
+def test_an_event_gets_its_end_and_the_defaults_for_what_it_lacks():
+    [ev] = events(Event(start="2026-11-05T09:00", end="2026-11-05T10:30"))
+
+    assert ev.end == datetime(2026, 11, 5, 10, 30, tzinfo=HELSINKI)
+    assert (ev.title, ev.source, ev.external_id, ev.description, ev.location, ev.kid) == \
+        ("(untitled)", "llm", "", "", None, None)
+
+
+@pytest.mark.parametrize("end, last", [
+    pytest.param(None, None, id="no-end"),
+    pytest.param("2026-10-09", None, id="same-day"),
+    pytest.param("2026-10-09T13:00:00", None, id="same-day-with-a-time"),
+    pytest.param("2026-10-13T13:00:00", datetime(2026, 10, 13), id="later-day-with-a-time"),
+])
+def test_a_date_alone_is_an_all_day_event_ending_on_its_last_day(end, last):
+    [ev] = events(Event(title="Ulkoilupäivä", start=" 2026-10-09 ", end=end, source="wilma",
+                        external_id="702", kid="Mia"))
+
+    assert ev.all_day and ev.start == datetime(2026, 10, 9, tzinfo=HELSINKI)
+    assert ev.end == (last.replace(tzinfo=HELSINKI) if last else None)
+    assert (ev.source, ev.external_id, ev.kid) == ("wilma", "702", "Mia")
+
+
+@pytest.mark.parametrize("bad", [Event(title="No start"), Event(start="Thursday"),
+                                 Event(start="2026-10-09T09:00", end="soon")])
+def test_an_event_with_a_bad_date_is_skipped(bad):
+    assert events(bad, Event(start="2026-10-09"))[0].all_day
+    assert events(bad) == []
+
+
+def test_no_calendar_events_are_none():
+    assert extract_calendar_events(parse({"calendar_events": None}), "Europe/Helsinki", "") == []
+
+
+# ── The instructions
+
+@pytest.mark.parametrize("language, keeps_finnish", [("en", True), ("zh", True), ("fi", False)])
+def test_the_instructions_ask_for_the_brief_in_its_language(language, keeps_finnish):
+    prompt = system_prompt(language)
+
+    assert f"Write every text value in the JSON in {TEXT[language].language_name}" in prompt
+    assert (FINNISH_TERMS in prompt) is keeps_finnish
+    assert ai_filter.INSTRUCTION not in prompt
+
+
+@pytest.mark.parametrize("masked, kids_masked, placeholders, kids", [
+    (True, False, True, False), (True, True, True, True), (False, True, False, False)])
+def test_the_instructions_explain_the_placeholders_the_payload_has(masked, kids_masked, placeholders, kids):
+    prompt = system_prompt("en", masked=masked, kids_masked=kids_masked)
+
+    assert (ai_filter.INSTRUCTION in prompt) is placeholders
+    assert (kid_placeholders.INSTRUCTION in prompt) is kids

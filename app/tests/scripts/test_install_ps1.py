@@ -1,0 +1,73 @@
+"""`install.ps1`, the Windows install (ADR 0019), stays in step with `install.sh`. CI's
+windows-install job runs it for real on a clean Windows runner, with the real downloads."""
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[3]
+
+
+def pins(script: str, pattern: str) -> dict[str, str]:
+    return dict(re.findall(pattern, (ROOT / script).read_text(), re.M))
+
+
+def test_windows_gets_the_python_and_node_versions_macos_gets():
+    sh = pins("install.sh", r"^(PYTHON_VERSION|PYTHON_BUILD|NODE_VERSION)=(\S+)$")
+    ps1 = pins("install.ps1", r"^\s*\$(PythonVersion|PythonBuild|NodeVersion) = '([^']*)'$")
+
+    assert ps1 == {"PythonVersion": sh["PYTHON_VERSION"], "PythonBuild": sh["PYTHON_BUILD"],
+                   "NodeVersion": sh["NODE_VERSION"]}
+
+
+def test_the_pasted_line_ends_on_the_setup_page_and_a_file_run_only_installs():
+    script = (ROOT / "install.ps1").read_text()
+    end = script.split("Install-ParentRecap\n  } catch", 1)[1]
+
+    # As get.sh on a Mac: the family pastes one line and lands on the page, served from the window.
+    opened = re.search(r"if \(-not \$failed -and -not \$PSCommandPath\) \{(.*?)\n  \}", end, re.S)
+    assert opened, "the page opens only after an install that worked, pasted"
+    # On the venv's Python, not pip's launcher, which Defender can block (#591).
+    assert "& (Join-Path $App '.venv\\Scripts\\python.exe') -m family_brief setup page" in opened.group(1)
+    assert "Keep this PowerShell window open" in opened.group(1)
+    # Run as a file, it exits with the install's result, not the last program it ran: CI runs it
+    # with `&` in a PowerShell with PSReadLine loaded, as a family's window has (#374).
+    assert "if ($PSCommandPath) { exit [int]$failed }" in end
+
+
+def test_run_as_administrator_it_stops_before_it_makes_anything():
+    # What it would make there, the evening task couldn't open (#464).
+    body = (ROOT / "install.ps1").read_text().split("function Install-ParentRecap {", 1)[1]
+
+    assert body.index("if (Test-Elevated) {") < body.index("New-Item")
+    assert "Run as administrator" in body.split("if (Test-Elevated) {", 1)[1].split("}", 1)[0]
+
+
+def test_as_install_sh_it_installs_the_baileys_tree_once_the_runtimes_are_recorded():
+    # CI's windows-install job runs it for real; this says where.
+    body = (ROOT / "install.ps1").read_text().split("function Install-ParentRecap {", 1)[1]
+
+    recorded = body.index("'-m', 'family_brief.install_record'")
+    assert recorded < body.index("@('-m', 'family_brief.baileys_install', 'install')")
+
+
+def test_as_install_sh_it_puts_the_command_on_the_path_once_the_program_is_recorded():
+    # CI's windows-install job opens a PowerShell with the user's PATH and runs it from there.
+    body = (ROOT / "install.ps1").read_text().split("function Install-ParentRecap {", 1)[1]
+
+    recorded = body.index("'-m', 'family_brief.install_record'")
+    assert recorded < body.index("@('-m', 'family_brief.command_path', 'install', $Target)")
+    # This window's PATH is the one it opened with, so it also says the full path.
+    said = body.split("is installed in $App", 1)[1].split("\n  }", 1)[0]
+    assert "new PowerShell window" in said and "'bin\\parent-recap.cmd'" in said
+    assert "parent-recap.exe" not in script_without_comments(body)
+
+
+def script_without_comments(script: str) -> str:
+    return "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+
+
+def test_install_ps1_is_ascii_only():
+    # Windows PowerShell 5.1 reads a script file without a byte order mark in the PC's own code
+    # page, so anything else would come out garbled.
+    (ROOT / "install.ps1").read_bytes().decode("ascii")

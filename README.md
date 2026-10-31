@@ -1,0 +1,317 @@
+# Parent Recap · 容器版
+
+> 每天晚上 20:00，把孩子的学校消息、班级群聊和俱乐部的训练安排，写成一份中文简报，发到邮箱。
+
+这是 [Parent Recap](https://github.com/kinlace/parent-recap)（作者 Zhao Hanbo & Xi Xiao，MIT 许可）的**容器化分支**。
+上游是给 macOS / Windows 桌面写的；这个分支把它装进一个 Docker 镜像，让它在一台 7×24 开机的
+家庭服务器（NAS、树莓派、小主机）上无人值守地跑，并且**全部配置都能在浏览器里点完**，不需要终端。
+
+镜像：`ghcr.io/ageral-bao/parent-recap:0.10.0`（公开，可直接拉）
+
+---
+
+## 目录
+
+- [它做什么](#它做什么)
+- [三步跑起来](#三步跑起来)
+- [设置页：全部配置在这里完成](#设置页全部配置在这里完成)
+- [为什么需要这些补丁](#为什么需要这些补丁)
+- [部署细节](#部署细节)
+- [日常运维](#日常运维)
+- [常见问题](#常见问题)
+- [隐私与安全](#隐私与安全)
+- [从源码构建](#从源码构建)
+- [升级与回滚](#升级与回滚)
+- [许可](#许可)
+
+---
+
+## 它做什么
+
+每天早上你会想知道的事，其实分散在四个地方：
+
+| 来源 | 里面有什么 | 怎么拿到 |
+|---|---|---|
+| **Wilma** | 老师的消息、班级通知、课程变动、请假回复 | 芬兰学校的官方平台，用家长账号登录 |
+| **班级 WhatsApp 群** | 临时改动、家长之间的通知（"明天带雨具"） | 以「已关联设备」的方式读取指定群 |
+| **MyClub** | 训练、比赛、场地、取消通知 | 俱乐部的 iCal 订阅链接 |
+| **Gmail**（可选） | 学校、俱乐部的邮件 | 只读，需给一个应用专用密码 |
+
+Parent Recap 每天晚上把这些读一遍，交给大模型（ChatGPT / Claude）写成一段话，
+**只写今晚新发生的、明天要准备的**，然后发一封邮件给家长。邮件里带一个 `.ics` 附件，
+点一下就能把明天的训练加进日历。
+
+默认行为里有几个很关键的取舍，值得先知道：
+
+- **没有新内容就不发信。** 群里的消息和老师的通知都是"未读"才算新；读过的不会重复出现。
+  但**明天的日程一定会出现在今晚的简报里**，哪怕它在两周前第一次出现时已经列过一次。
+- **不读就不猜。** 某个来源读不到（密码过期、WhatsApp 掉线），简报里会明说"这一块今晚缺了"，
+  而不是当作没发生过。
+- **敏感内容不交给 AI。** 涉及健康、特殊支持、霸凌、儿童保护的消息，原文不进模型，只提示"请到原处查看"。
+- **只写，不动你的账号。** Wilma 不会被发消息，WhatsApp 只读，日历只读（`.ics` 模式下不碰 Google 账号）。
+
+---
+
+## 三步跑起来
+
+需要一台装了 Docker 的机器（NAS 的 Container Manager、树莓派、任意 Linux 主机都行），
+**能 7×24 开机并联网**——简报是它自己按点跑的，机器睡了就没有。
+
+```bash
+# 1. 拿这两个文件
+mkdir parent-recap && cd parent-recap
+curl -O https://raw.githubusercontent.com/Ageral-Bao/parent-recap-docker/main/docker-compose.yml
+curl -O https://raw.githubusercontent.com/Ageral-Bao/parent-recap-docker/main/.env.example
+cp .env.example .env      # 把 SETUP_PUBLIC_URL 改成你服务器的地址
+
+# 2. 起设置页（第一次默认就是 setup 模式，不会发信）
+docker compose up -d
+
+# 3. 拿到带一次性 code 的地址，用浏览器打开
+docker logs parent-recap 2>&1 | grep -o 'http://[^ "]*' | head -1
+```
+
+打开那个地址，跟着向导走完六步（见下一节），最后点「开启」，简报就每晚自动跑了。
+
+> 如果 `.env` 里设了 `SETUP_CODE`，地址就是固定的，可以收藏：`http://<你的地址>:8090/<code>/`。
+> 不设的话每次重启都会变一个，需要重新从日志里取。
+
+---
+
+## 设置页：全部配置在这里完成
+
+这个分支最实质的改动就是这一页。上游的设置页只绑 `127.0.0.1`、只给本机浏览器用，
+在服务器上等于不可用。现在它绑 `0.0.0.0`，从局域网任何一台设备都能打开。
+
+| 步骤 | 要准备什么 | 在这一页怎么做 |
+|---|---|---|
+| **孩子** | 名字、各自的语言 | 直接填；收件人也可以在这一步就加好（想加几个都行，每个选自己的语言） |
+| **Wilma** | 城市、用户名、密码 | 网页表单直接登录，不需要终端 |
+| **Gmail** | 一个专用邮箱 + 应用专用密码 | 页面上教你开两步验证、生成 16 位应用专用密码，粘贴进来即可。顶部会实时显示"日报将从 xxx@gmail.com 发出" |
+| **AI** | ChatGPT 账号 | 选 Codex，页面给你一个**设备码**（形如 `S9C1-B6O2I`）：在手机或电脑打开 `auth.openai.com/codex/device` 输入即可。服务器没有浏览器，所以不用跳转回调 |
+| **WhatsApp** | 手机上的 WhatsApp | 二维码直接画在网页上，手机「已关联的设备 → 关联设备」扫一下 |
+| **MyClub** | 俱乐部的 iCal 链接 | 从 MyClub 的日历订阅里复制 `webcal://…` 粘贴进来 |
+
+页面的访问控制很简单但够用：
+
+- 地址里那串 **64 位随机 code 是唯一通行证**，没有它一律 403；
+- 跨站来源的请求（CSRF）被拒；
+- `SETUP_CODE` 可以把它固定下来，方便收藏。
+
+---
+
+## 为什么需要这些补丁
+
+上游的 `0.10.0` 直接装进容器是跑不起来的，下面这些是必须改的地方（完整清单见 [PATCHES.md](PATCHES.md)）：
+
+### 让它在容器里跑得起来
+
+| # | 问题 | 改法 |
+|---|---|---|
+| A1 | `email.sender` 字段被上游移除，只走官方 gateway，**必须有 Gateway Key** | 恢复 `sender: gmail` |
+| A2 | 没有 Gmail 发信通路 | 加 SMTP 分支（`smtp.gmail.com:465` + 应用专用密码） |
+| A3 | `doctor` 检查定时任务时调 `loginctl`，容器里没有 → 直接崩 | 优雅降级 |
+| A4 | WhatsApp 源硬编码只允许 macOS / Windows，**Linux 上整源被禁** | 放开到 Linux |
+| A5 | 容器里没有 systemd，没法定时 | `entrypoint.sh` 自己算点运行 |
+| D1 | 设置页做「第一份日报」时调 `run_detached`，Linux 适配器里是**抛异常的桩** | 实现成普通子进程（流式读输出、超时杀掉） |
+
+### 让设置页能在服务器上用
+
+| # | 问题 | 改法 |
+|---|---|---|
+| B1 | 设置页写死绑 `127.0.0.1`，且校验 Host/Origin 必须等于绑定地址 | 可绑 `0.0.0.0`；校验改成"请求自洽"（Origin 必须等于本次请求的 Host），CSRF 防护不减弱 |
+| B2 | 30 分钟无请求就自动关闭 | `SETUP_IDLE_MINUTES`，0 = 常驻 |
+| B3 | Codex 登录靠浏览器回调 `localhost:1455`，容器里没救 | 走 `codex login --device-auth`，把设备码回传给页面显示 |
+| B4 | Linux 的 profile 默认跳过 AI 和 Gmail 两步 | `PARENT_RECAP_OWN_SERVER=1` 时全部打开 |
+| B5 | 完成后页面自动关掉，之后改配置只能重启容器 | 容器模式下保持打开 |
+
+### 用起来的体验
+
+| # | 问题 | 改法 |
+|---|---|---|
+| C1–C5 | 收件人 UI 写死"设置者 + 1 位伴侣"，且自动把发信邮箱算成一个收件人 | 改成可任意增删的列表，只发给你填的地址 |
+| C6 | 文案都说"日报从 brief@parentrecap.com 发出、经过团队服务器" | 改成自家 Gmail 发信的说法 |
+| D2 | 页脚说"此发件地址无人查看，请写信给 X"——自家 Gmail 发信时是错的 | 自家发信时不加这句 |
+| E1 | **已通知过的日程会被永久过滤**，于是它真正要发生的前一晚反而静默 | 未结束且落在今天/明天的事件一定进简报 |
+| E2 | 收尾页「已安装」「每晚的日报已开启」两项在容器里必然失败，还会弹出不存在的 `$parent-recap-setup` 提示 | 容器模式识别（`PARENT_RECAP_CONTAINER=1`），四项全绿 |
+| E4 | "晚上请让 Mac 睡眠或锁屏" | 服务器版文案 |
+
+---
+
+## 部署细节
+
+### 环境变量
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `MODE` | `daily` | `daily` = 每晚简报（设置页并存）；`setup` = 只跑设置页，适合还没有配置的新装 |
+| `TZ` | `Europe/Helsinki` | 时区，`DAILY_HOUR` 按它算 |
+| `DAILY_HOUR` / `DAILY_MINUTE` | `20` / `0` | 简报的时间 |
+| `SETUP_PORT` | `8090` | 设置页端口（内外一致） |
+| `SETUP_PUBLIC_URL` | — | 日志里打印的地址，填你实际访问的地址 |
+| `SETUP_CODE` | 空 | 固定页面 code；空则每次启动随机 |
+| `SETUP_IDLE_MINUTES` | `0` | 页面无请求多久后关闭；0 = 常驻 |
+| `RUN_ON_START` | `0` | 设 1 则容器启动时立刻跑一次（调试用） |
+
+### 数据卷
+
+镜像里**没有任何你的数据**。所有状态都在 `./data/` 下：
+
+```
+data/
+├── family/          config.yaml、state.json、secrets/（Gmail 应用专用密码，0600）
+├── wilmai/          Wilma 的登录会话
+├── codex/           ChatGPT 的登录态
+├── linked-device/   WhatsApp 的配对凭据与消息库
+└── archive/         每天一份简报（.md + .raw.json）和运行日志
+```
+
+**备份就备 `data/`**，换机器时整个搬过去即可（`linked-device` 最好在容器停止时复制，
+否则可能复制到写了一半的文件）。
+
+### 时区与语言
+
+简报的语言由 `config.yaml` 的 `summary_language` 决定（`fi` / `en` / `zh`），
+每个收件人还可以有各自的语言——同一天的内容会按语言分别渲染、分别发送。
+
+---
+
+## 日常运维
+
+```bash
+# 手动跑一次（不等到 20:00）
+docker exec parent-recap parent-recap run
+
+# 只看会生成什么，不发信、不写状态
+docker exec parent-recap parent-recap run --dry-run
+
+# 体检：12 项，包括 Codex、Wilma、WhatsApp、MyClub、Gmail、日历
+docker exec parent-recap parent-recap doctor
+
+# 设置页地址（没设 SETUP_CODE 时每次重启都变）
+docker logs parent-recap 2>&1 | grep -o 'http://[^ "]*' | head -1
+
+# 运行日志
+docker logs --tail 50 parent-recap
+
+# WhatsApp 的常驻服务日志
+tail -f data/archive/logs/linked-device.log
+
+# 今天的简报
+cat data/archive/$(date +%F).md
+```
+
+`doctor` 全绿的样子：
+
+```
+12 checks: 12 OK, 0 warnings, 0 to fix
+```
+
+---
+
+## 常见问题
+
+**问：晚上没收到简报？**
+不是坏了，多半是"今晚确实没有新内容"。看日志里有没有 `Nothing to tell the family tonight; no Brief sent.`
+但注意：**只要明天有日程，就一定会发**。如果你希望每天必收一封（哪怕只有"明天有什么"），
+这个分支的行为已经是这样了。
+
+**问：明天的训练没出现在简报里？**
+检查 `config.yaml` 里这两行，上游默认会把俱乐部的日程排除掉：
+
+```yaml
+google_calendar:
+  mode: ics
+  ics_include_myclub: true
+```
+
+**问：WhatsApp 显示"需要重新关联设备"？**
+说明 WhatsApp 服务端把这次关联登出了（`logged out: the link ended`）。常见原因是**同一套配对凭据
+被两个进程同时使用**——比如容器重启时旧进程还没退干净。处理：打开设置页的 WhatsApp 步骤扫码，
+已选的群会保留。
+
+**问：设置页地址打开是 403？**
+地址里少了那串 code，或者容器重启后 code 变了（除非设了 `SETUP_CODE`）。从日志里重新取。
+
+**问：ChatGPT 登录卡住？**
+服务器没有浏览器，**不要**点普通的"登录"跳转。选 Codex 后页面会给一个设备码，
+去 `auth.openai.com/codex/device` 输入。设备码 15 分钟内有效，过期点"再试一次"。
+
+**问：Gmail 说密码无效？**
+应用专用密码是 16 位、无空格，且**只有在开了两步验证后才有**。账号密码不能用于 SMTP。
+生成入口：`https://myaccount.google.com/apppasswords`。换了密码后写进
+`data/family/secrets/gmail-imap-<账号>` 再重启容器。
+
+**问：能不能不用官方 gateway？**
+可以，这个分支默认就是自家 Gmail 发信，不需要 Gateway Key。如果你反而想用官方 gateway，
+把 `email.sender` 改成 `gateway` 并配置密钥。
+
+**问：邮件进了垃圾箱？**
+第一次发信时，Hotmail / Outlook 容易把陌生发件人当垃圾邮件。标记一次"不是垃圾邮件"即可。
+用自家 Gmail 发信时这个问题会轻很多。
+
+**问：容器重启后设置页还在吗？**
+在（`SETUP_IDLE_MINUTES=0` 时页面常驻），地址取决于有没有设 `SETUP_CODE`。
+
+---
+
+## 隐私与安全
+
+- **镜像里没有你的数据。** 配置、密码、WhatsApp 配对、历史简报全在挂载的 `data/` 卷里。
+  把镜像给别人，给出去的只是程序。
+- **所有密钥都是明文文件，权限 0600**，只能 root 读。它们等价于账号控制权：
+  `data/linked-device/`（WhatsApp）、`data/codex/`（ChatGPT）、
+  `data/family/secrets/`（Gmail 应用专用密码）。
+- **设置页的 code 就是密码。** 64 位随机，泄露了等于把配置页交给对方（能改配置，但看不到历史简报）。
+  需要时设一个新的 `SETUP_CODE` 重启即可作废旧地址。
+- **建议不要暴露到公网。** 在局域网内用，或者走 Tailscale / WireGuard 之类的
+  虚拟局域网访问，比把 8090 端口映射出去安全得多。
+
+---
+
+## 从源码构建
+
+仓库里 `app/` 是打好补丁的源码，`nas/` 是容器文件。
+
+```bash
+git clone https://github.com/Ageral-Bao/parent-recap-docker.git
+cd parent-recap-docker
+docker compose -f nas/docker-compose.yml build     # 约 5 分钟，主要在装依赖
+```
+
+也可以用 `docker build -f nas/Dockerfile -t parent-recap .` 然后自行打标签。
+
+镜像构成：Debian slim + Node 22 + Python 3.11 venv + `@wilm-ai/wilma-cli` + `@openai/codex` +
+Baileys（WhatsApp 的 Node 实现），约 1.16 GB，其中 Codex CLI 占 650 MB 左右。
+
+---
+
+## 升级与回滚
+
+**升级**（配置和数据都不受影响）：
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+**跟上游**：上游发新版时，把 `app/` 换成新版源码，再照 [PATCHES.md](PATCHES.md) 重打一遍补丁。
+补丁分五组，每组都写了「上游原本什么样 / 为什么要改 / 改成什么」，照做即可。
+
+**回滚**：`docker tag` 回旧镜像再 `up -d`。数据卷是向前兼容的，一般不需要回滚数据。
+
+---
+
+## 许可
+
+`app/` 与 `nas/` 里的上游代码遵循 **MIT 许可**，版权归 Zhao Hanbo 与 Xi Xiao（见 [LICENSE](LICENSE)）。
+本分支的改动同样以 MIT 发布。第三方组件的许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+---
+
+## 致谢
+
+- 上游 [Parent Recap](https://github.com/kinlace/parent-recap)：把"每天从四个地方捞信息、写成一段话"这件事
+  做得足够克制——不猜、不编、读不到就明说。这个分支只是把它搬到了服务器上。
+- 它的设计文档（ADR）在 `app/docs` 里，值得一读：为什么只读、为什么敏感内容不进模型、
+  为什么宁可少发也不重复。

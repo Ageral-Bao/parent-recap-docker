@@ -1,0 +1,67 @@
+# Parent Recap, container edition: an example config.yaml for a Household that runs it on its own
+# server. Copy it to data/family/config.yaml before the first start, or leave the file out and let
+# the setup page write it (that is the way this image is meant to be set up).
+
+# Who the Brief is about. MyClub's own calendar is per child, as the club gives it.
+kids:
+  - name: Kid A
+    everyday_name: Andy
+  - name: Kid B
+    everyday_name: Eric
+    # The club's own feed (webcal://…): the Brief reads it, and so lists the training and matches.
+    myclub_ical_url: webcal://id.myclub.fi/flow/calendar_subscriptions/00000.ics?token=REPLACE_ME
+
+# The language the Brief is written in: fi, en or zh.
+summary_language: zh
+
+llm:
+  # codex: the ChatGPT sign-in in data/codex, which the setup page pairs with a device code.
+  # claude: Claude Code's sign-in. gateway: the maintainers' relay, which needs their Gateway Key.
+  backend: codex
+
+city: Espoo
+
+google_calendar:
+  # ics: the new events are listed in the Brief and attached as a .ics file, with no Google account.
+  mode: ics
+  # Upstream leaves the club's events out, on the assumption the household subscribed to the club's
+  # feed in its own calendar app. Set here, so the Brief itself says what is coming.
+  ics_include_myclub: true
+
+wilma:
+  # Espoo's school platform: messages, news and the week's plans from the teacher.
+  enabled: true
+
+email:
+  # This fork's patch: the Brief goes out through the Household's own Gmail (SMTP + App Password)
+  # rather than the maintainers' gateway, so it comes from an address the family already reads and
+  # needs no Gateway Key. "gateway" is upstream's way.
+  sender: gmail
+  # Every address the Brief goes to, each with the language that Reader reads. The address it is
+  # sent from is not one of them: only what is listed here.
+  to:
+    - address: parent.one@example.com
+      language: zh
+    - address: parent.two@example.com
+      language: fi
+
+gmail:
+  # The account the Brief is sent from, and the one read for school and club mail.
+  username: family@gmail.com
+  # Empty reads no mail: the Brief is then built from Wilma, WhatsApp and the club's calendar only.
+  # Domains listed here are read (e.g. [espoo.fi, myclub.fi]).
+  allowlist_domains: []
+
+whatsapp:
+  # The groups whose messages go into the Brief, read as a linked device.
+  enabled: true
+  chats:
+    - name: 1B parents
+      id: 120000000000000000@g.us
+
+archive:
+  dir: ~/ParentRecap/archive
+
+schedule:
+  daily_hour: 20
+  daily_minute: 0

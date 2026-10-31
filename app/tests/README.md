@@ -1,0 +1,370 @@
+# Tests
+
+What each test checks is in its module's docstring and its name; this page is the map.
+
+## Commands
+
+From `app/`:
+
+```bash
+python -m pip install --only-binary :all: -c constraints.txt -e '.[test,google]'   # once, in an isolated env
+python -m pytest                                # whole suite
+python -m pytest -m unit                        # one layer (or: python -m pytest tests/unit)
+python -m pytest tests/e2e/test_nightly_brief.py  # one file
+python -m pytest --update-goldens=normal_night  # rewrite one night's goldens (see Golden files)
+python -m playwright install --only-shell chromium  # once, for the browser tests
+python -m pytest -m "e2e and not browser"       # the e2e layer without them
+python -m pytest -n auto                        # on every core (pytest-xdist)
+```
+
+CI runs the layers as separate steps, fastest first (unit, integration, e2e, adapters, scripts),
+so a failure in the fast layers shows in a minute. The browser tests run last. On macOS the e2e,
+script and browser layers run on every core (`-n auto`), so a test must not share state with
+another: a free port, files under `tmp_path`. Windows runs them in one process.
+
+## Layers
+
+Every test file lives in the folder of its layer, and `conftest.py` marks each test with its
+folder's name, so `-m <layer>` runs one layer. A file outside these folders stops the run.
+
+| Layer         | Folder               | What it may fake                                                                                                                                                           |
+| ------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `unit`        | `tests/unit/`        | Nothing: pure functions, table-driven.                                                                                                                                     |
+| `integration` | `tests/integration/` | In-memory fakes around one module, which is called through its interface.                                                                                                  |
+| `e2e`         | `tests/e2e/`         | Only the OS and network edge and the model (`conftest.py`'s harness); drives `main()` or the setup page over HTTP.                                                         |
+| `adapters`    | `tests/adapters/`    | The command an OS adapter calls (`launchctl`, `security`, `pmset`), or nothing where the real OS runs (Credential Manager, Task Scheduler); the `_windows` twins are here. |
+| `scripts`     | `tests/scripts/`     | The downloads and programs `install.sh`, `install.ps1`, `release.py` and `issue-loop.sh` call; the workflows are read as written.                                          |
+
+A branch a unit test covers gets no end-to-end test of its own (#427). Every layer's folder is on
+the import path, so a test may import a helper from a test in another layer.
+
+## Unit tests
+
+| File                          | What it covers                                                   |
+| ----------------------------- | ---------------------------------------------------------------- |
+| `test_ai_filter.py`           | The AI filter on its own: messages in, masked text and names out |
+| `test_baileys_pin.py`         | The committed npm files pin Baileys and its tree, with hashes    |
+| `test_brief.py`               | The Brief read from the archive and written back; old archives   |
+| `test_brief_text.py`          | The program's own Brief and Weekend Picks text                   |
+| `test_citations.py`           | The model's citations checked against what the program supplied  |
+| `test_eval_scoring.py`        | The eval's deterministic scoring                                 |
+| `test_failure.py`             | Why a setup step failed, as the setup page shows and copies it   |
+| `test_held_back.py`           | Which texts look sensitive, against `sensitive_words.yaml`       |
+| `test_kid_placeholders.py`    | Each Kid as Kid A, Kid B and back                                |
+| `test_last_run.py`            | A run's peak memory, from the run's and its children's sizes     |
+| `test_llm_memory.py`          | The llm package's in-memory adapter (ADR 0023)                   |
+| `test_llm_parse.py`           | The model's reply parsed, tier by tier, and the CLI's envelope   |
+| `test_per_language.py`        | The Brief's and Weekend Picks' versions, one per language        |
+| `test_render.py`              | Each golden night's Brief rendered, against its golden files     |
+| `test_run_plan.py`            | Quiet nights, dry runs and the preview: what tonight's run does  |
+| `test_sources.py`             | The Source registry's records, and the Sources a Household uses  |
+| `test_status_lines.py`        | The hosted status: an overdue run, a Household's line, its keys  |
+| `test_summarize_normalise.py` | The model's reply put in the schema's shape                      |
+| `test_system_profile.py`      | The systems' profiles; only `system/` checks the system          |
+| `test_weekend_pipeline.py`    | The pure parts of Weekend Picks                                  |
+| `test_whatsapp_hints.py`      | The Kid hint on each WhatsApp group the check page lists         |
+
+## Integration tests
+
+| File                            | What it covers                                                                              |
+| ------------------------------- | ------------------------------------------------------------------------------------------- |
+| `test_brief_relay.py`           | The gateway's Brief relay: the key, the cap, the request, the message, keys on request      |
+| `test_collector_labels.py`      | The labels Sources add to Messages are English                                              |
+| `test_command_path.py`          | `parent-recap` put in its own folder on the PATH, once, and recorded                        |
+| `test_email_gateway.py`         | The Brief sent through the gateway's relay: the request, refusals, a key, binding, doctor   |
+| `test_eval_runner.py`           | The eval runner end to end, only the model process faked                                    |
+| `test_evening_run.py`           | The evening run through `run()`: it leaves its config as it was                             |
+| `test_goldens.py`               | The golden files' check and `--update-goldens`                                              |
+| `test_linked_device.py`         | The Linked Device's Node program's four modes on a fake Baileys                             |
+| `test_llm_claude.py`            | The Claude adapter, run isolated from the family's own Claude Code                          |
+| `test_llm_codex.py`             | The Codex adapter, and a busy model tried again after pauses                                |
+| `test_llm_gateway.py`           | The gateway adapter: what its HTTP answers mean, busy, its checks                           |
+| `test_setup_claude_token.py`    | The older Terminal script that stores the Claude token                                      |
+| `test_setup_google_calendar.py` | The Google Calendar authorization script                                                    |
+| `test_weekend_picks.py`         | Weekend Picks through the same backend as the Brief                                         |
+| `test_whatsapp_source.py`       | WhatsApp's collector: the Linked Device's store read, mapped to Messages, pruned            |
+
+## End-to-end tests: the evening run
+
+| File                              | What it covers                                                                        |
+| --------------------------------- | ------------------------------------------------------------------------------------- |
+| `test_nightly_brief.py`           | The Brief a normal night makes, failures at the edges                                 |
+| `test_nightly_continuity.py`      | Nights in a row, quiet nights, `run --if-missed`                                      |
+| `test_nightly_google_calendar.py` | Google Calendar mode                                                                  |
+| `test_nightly_languages.py`       | Recipients in their own languages                                                     |
+| `test_nightly_placeholders.py`    | The AI filter's placeholders, end to end (ADR 0013)                                   |
+| `test_nightly_held_back.py`       | Held-back Messages, end to end (ADR 0013)                                             |
+| `test_nightly_new_source.py`      | A Source added only to the registry is read, counted, caught up                       |
+| `test_any_language.py`            | A Recipient in a language without reviewed program text (ADR 0004)                    |
+| `test_busy_model.py`              | How long each model call may wait for a busy model                                    |
+| `test_gateway.py`                 | The gateway backend (ADR 0014): Brief, doctor and `setup gateway`                     |
+| `test_gateway_sends.py`           | Every Brief sent by the gateway (ADR 0032): refusals, doctor, Gmail-sent Households   |
+| `test_send_key_on_request.py`     | A send-only key on request (ADR 0033): setup page, `setup confirm`, doctor, the run   |
+| `test_source_failures.py`         | A Source's transport failing partway or timing out                                    |
+| `test_wilma_source.py`            | The Wilma Source against a fake wilma CLI printing 2.x's JSON                         |
+| `test_nightly_whatsapp.py`        | WhatsApp from the Linked Device's store; a link needing a pairing                     |
+| `test_overlapping_runs.py`        | Runs never overlap; `bg` says when its run didn't finish                              |
+| `test_private_files.py`           | Other accounts can't read what Parent Recap keeps                                     |
+| `test_ai_filter_report.py`        | `parent-recap ai-filter-report` over an archive                                       |
+| `test_schedule_run_now.py`        | `schedule run-now`                                                                    |
+| `test_without_google_packages.py` | Everything but google mode runs without Google's packages                             |
+
+The nights and helpers more than one `test_nightly_*.py` uses are in `e2e/nights.py`.
+
+## End-to-end tests: setup, doctor and uninstall
+
+| File                                       | What it covers                                                         |
+| ------------------------------------------ | ---------------------------------------------------------------------- |
+| `test_setup_page.py`                       | The page's server, its safeguards, the language, resuming, Source list |
+| `test_setup_welcome.py`                    | Welcome                                                                |
+| `test_setup_ai.py`                         | The AI sign-in, the gateway, changing the AI on Finish                 |
+| `test_setup_gmail.py`, `_wilma`, `_myclub` | Each Source's `setup` command, then its step on the page               |
+| `test_setup_whatsapp.py`                   | WhatsApp's step: the Linked Device's `pair` on a real Node, the job    |
+| `test_setup_back_to_connect.py`            | The way back from Check and Finish to Connect, for a skipped Source    |
+| `test_setup_claude.py`                     | `setup claude` and its terminal window                                 |
+| `test_setup_check.py`                      | Working and Check                                                      |
+| `test_setup_first_brief.py`                | First Brief                                                            |
+| `test_setup_finish.py`                     | Finish: the evening job, the wake-up, the outcomes                     |
+| `test_setup_chat.py`                       | The chat Welcome sets up, "Continue in the chat"                       |
+| `test_setup_save.py`                       | `setup save`: answers and progress                                     |
+| `test_setup_status.py`                     | `setup status`: the outcomes that say setup is done                    |
+| `test_setup_steps.py`                      | Setup steps a family runs by hand                                      |
+| `test_doctor.py`                           | `doctor` and `discover`                                                |
+| `test_finding_programs.py`                 | Claude, Codex and Node found off PATH                                  |
+| `test_own_node.py`                         | The wilma CLI on Parent Recap's own Node (ADR 0011)                    |
+| `test_baileys_install.py`                  | The install's Baileys tree, staged with its own Node's `npm ci`        |
+| `test_uninstall.py`                        | `uninstall` removes what setup made, and nothing else                  |
+| `test_new_source_doctor_uninstall.py`      | A Source added only to the registry in `doctor` and `uninstall`        |
+| `test_setup_page_browser.py`               | Main paths and each step's own, in a real browser (ADR 0024)           |
+| `test_signup.py`                           | The hosted sign-up: page, Wilma, MyClub, first Brief, 404s, removal    |
+| `test_hosted_status.py`                    | `signup status`: each Household's last run and doctor, nothing private |
+
+The page's server, its calls and the steps more than one file walks through are in
+`e2e/setup_page.py`.
+
+A setup step's answers, results and files get an HTTP test, as the page's script calls the server.
+What only the page does gets a browser test: a step it shows or hides, a button it enables, the
+text it picks for a result, or a path a family clicks through. These are marked `browser`, run
+headless Chromium through Playwright and skip, saying why, where it isn't installed. They are the
+slowest tests, so add one for a main path, not for each result.
+
+## Adapter tests
+
+| File                            | What it covers                                            |
+| ------------------------------- | --------------------------------------------------------- |
+| `test_desktop.py`               | macOS desktop: `open`, Terminal, `defaults`               |
+| `test_dialog.py`                | The secret dialog: `osascript` on macOS, none elsewhere   |
+| `test_jobs.py`                  | macOS jobs: LaunchAgents and `launchctl`                  |
+| `test_secrets.py`               | macOS secrets: the Keychain through `/usr/bin/security`   |
+| `test_wake.py`                  | macOS wake: `pmset`                                       |
+| `test_user_path.py`             | macOS PATH: the marked line in `~/.zprofile`              |
+| `test_desktop_windows.py`       | Windows desktop: browser, Notepad, PowerShell windows     |
+| `test_jobs_windows.py`          | Windows jobs: Task Scheduler tasks                        |
+| `test_secrets_windows.py`       | Windows secrets: Credential Manager                       |
+| `test_wake_windows.py`          | Windows wake: wake timers and sleep timeouts              |
+| `test_user_path_windows.py`     | Windows PATH: the user's Path in the registry             |
+| `test_windows_only.py`          | What only Windows checks for the evening run              |
+| `test_secrets_linux.py`         | Linux secrets: owner-only files, written for real         |
+| `test_user_path_linux.py`       | Linux PATH: links in `~/.local/bin`                       |
+| `test_desktop_linux.py`         | Linux desktop: a printed link, the locale's languages     |
+| `test_jobs_linux.py`            | Linux jobs: systemd user timers, lingering, their limits  |
+| `test_wake_linux.py`            | Linux wake: a server never sleeps, so no wake-up line     |
+| `test_household_host_linux.py`  | The sign-up's household host: sudo, Bifrost's admin API   |
+| `test_brief_by_hand_windows.py` | A Brief started by hand on Windows                        |
+| `test_setup_page_windows.py`    | The setup page from a fresh install to Finish, on Windows |
+| `test_setup_wilma_windows.py`   | The Wilma sign-in window on Windows                       |
+
+## Script tests
+
+| File                       | What it covers                                               |
+| -------------------------- | ------------------------------------------------------------ |
+| `test_install.py`          | `install.sh`: pinned Python and Node, prebuilt packages only |
+| `test_install_ps1.py`      | `install.ps1` stays in step with `install.sh`                |
+| `test_one_line_install.py` | `get.sh`, the line a family pastes                           |
+| `test_codex_install.py`    | `install.sh --codex` installs the skills for Codex           |
+| `test_release.py`          | The release zip built from a tag                             |
+| `test_version.py`          | The plugin and the package ship the same version             |
+| `test_workflows.py`        | Every GitHub Actions workflow parses                         |
+| `test_issue_loop.py`       | `issue-loop.sh`'s merge step and its checker                 |
+| `test_tests_readme.py`     | This page lists every test file, in short sections           |
+
+## Fixtures
+
+The shared fakes stay in `tests/`, beside the golden files. `conftest.py` has four fixtures, one
+per outside edge of the program, each with its fakes in a module of its own:
+
+- `sources` (`fake_sources.py`): each Source's fake at its transport (Gmail's IMAP server, the
+  MyClub feed, the wilma CLI, the Linked Device's store and status file), as `sources.fakes[name]`, serving what
+  `sources.tonight[name]` holds to the real collector. One is installed for each Source in the
+  registry (ADR 0022), so a new Source adds its fake to `FAKES`. A test gives each Message the id
+  its Source makes of it, and only the fields its transport carries.
+- `model` (`fake_model.py`): every backend's model calls go to the llm package's in-memory
+  Backend (ADR 0023), whose `calls` record each prompt, system prompt and budget. The backend is
+  otherwise its real adapter, so it finds its program and checks its sign-in; `model.reached` is
+  the program it found for each call, or the gateway's host. A failed call is the exception the
+  adapter raises. The model says nothing by default, so a test that needs the night's Brief to
+  go out has it reply `SAYS_SOMETHING` (#385). The adapters' own tests (`test_llm_*.py`) meet the
+  model's program or the gateway's HTTP instead, through `ModelProcess` and `GatewayServer`.
+- `outbox` (`fake_outbox.py`): email, iMessage and the Google Calendar API, recording what goes
+  out, or failing.
+- `system` (`fake_system.py`): in-memory secrets, jobs, wake, desktop and secret dialog, as
+  `system.secrets`, `.jobs`, `.wake`, `.desktop` and `.dialog`. Only the adapter tests meet these
+  services' commands. `system.profile` is the profile the program sees, this system's until a
+  test sets `MACOS`, `WINDOWS` or `LINUX`, so a Mac runs the Windows paths too. On Linux it is
+  macOS's until a test sets `LINUX`, as the tests of a family's own computer expect, and so is the
+  profile of a test without the fixture.
+
+An integration test asks for the one fixture it uses. `harness` composes all four and runs the
+real `parent-recap` in-process in a temporary HOME, with "now" pinned: the end-to-end tests use
+it, and reach each fixture's fakes by its attributes (`harness.sources`, `.model_calls`, `.sent`,
+`.secrets`, `.system`, ...). What has no interface of its own still meets its command through
+the harness's one `subprocess.run` fake (`Processes`): the macOS-only features ADR 0020 leaves
+out (iMessage, `open` for the Passwords app), the Sources' own programs, and Claude Code's and
+Codex's sign-in and plugin commands. A model call never does. `conftest.py` also has `pauses`
+(a busy model's pauses, on a fake clock), `golden`, `login_shell`, `windows_programs` (programs
+found as Windows finds them, on any system), `credential_manager`, and the builders `msg` and
+`myclub_event`.
+
+## Other fakes and helpers
+
+- `fake_node.py`: Parent Recap's own Node, a fake wilma CLI and Baileys tree in the test's
+  `~/ParentRecap`, and `install_fake_baileys`, which puts `fake_baileys/` in a module folder: a
+  stand-in Baileys that plays the steps a test gives it (QR codes, open, close, creds and keys)
+  and records each call the Linked Device's program makes. That program runs on a real Node,
+  Parent Recap's own where it is installed, else one on PATH; CI's runners have one.
+- `fake_packages.py`: packages for tests that run the real pip offline.
+- `fake_household_host.py`: the sign-up service's household host (ADR 0031): users as folders,
+  each with its own secrets and jobs, removed with them, Gateway Keys as a dict, and
+  `parent-recap` run as a user in-process with that user's HOME.
+- `goldens.py`: the golden files' check.
+- `no_google/`: Google's packages blocked from import. `no_pty/`: the Wilma window's
+  pseudo-terminal as a socket pair, where none can be opened (a sandbox).
+- `e2e/nights.py` and `e2e/setup_page.py` (`page`, `clock`, `ai`, `health`, `schedule`) are shared
+  by their files; `test_setup_back_to_connect.py`'s `back_to_connect` is Finish's way back too,
+  and `test_setup_whatsapp.py`'s `phone` (the fake Baileys playing the QR codes and the scan) is
+  the browser tests' too.
+  The page's server gets the test's clock and timeouts on its `Context`, and socket pairs for a
+  listener where no port can be listened on; a test meets it through its HTTP calls, and never
+  reaches its private parts or patches its modules.
+
+Config, state and the archive are real files in a temporary HOME; "now" and the timezone are pinned.
+
+## Markers
+
+The layer markers come from the folder and are never written by hand. Three more say which system
+a test needs, and skip it elsewhere, so each CI job runs every other test:
+
+- `@pytest.mark.macos` (a whole module: `pytestmark = pytest.mark.macos`): the macOS adapters,
+  macOS-only features (the Passwords app), `install.sh`
+  and the other shell scripts, permission bits, and what Windows can't do yet (finding programs by
+  bare name, shell-script stand-ins, pseudo-terminal windows). A Windows ticket that makes one work
+  there drops the mark.
+- `@pytest.mark.posix`: what needs macOS or Linux, such as the Linux adapters run for real
+  (permission bits, links) and `install.sh` on a Linux server; skipped on Windows.
+- `@pytest.mark.windows`: the Windows adapters and Windows' own layout. The Credential Manager and
+  Task Scheduler tests use the real ones, under a test name of their own, and delete what they
+  made.
+
+`browser` marks the tests that drive the setup page in a real browser; CI's macOS job runs them in
+a step of their own, after Chromium is installed. They are the page script's tests: no test reads
+`page.js`, and what the page does on Windows is tested by changing the `system` the Mac's server
+sends the page (`as_on` in `test_setup_page_browser.py`).
+
+CI runs the suite on macOS, on Linux all but the browser tests, and on Windows the unit,
+integration and adapter layers and the end-to-end tests marked `windows`. `install.ps1` itself
+runs for real in CI's windows-install job, and `install.sh` on Linux in its linux-install job.
+
+## Golden files
+
+The Brief's text, HTML, `.ics` and the model's prompts are compared against `golden/`.
+When a change to the Brief or the prompt is intended, regenerate the goldens and review the diff:
+
+```bash
+python -m pytest --update-goldens               # every golden
+python -m pytest --update-goldens=normal_night  # one night's: normal_night.*
+python -m pytest --update-goldens='*.ics'       # a glob
+git diff tests/golden
+```
+
+The pattern is a glob, or a name up to a dot. Only goldens that match and changed are rewritten,
+each with one line at the end of the run saying how many lines it gained and lost; the rest are
+still compared. Write the pattern with `=`: `--update-goldens tests/e2e` is refused.
+
+The `archive_*` goldens render archives checked in as an earlier version wrote them
+(`unit/data/archive-*.raw.json`), so an old archive still loads and renders as it did. Regenerate
+them only for a change meant to make every Brief look different, never for a change to how the
+archive is read; when the archive's shape changes, check in an archive of the new shape beside them.
+
+## Brief quality eval
+
+The goldens only show that the Brief looks the same. Whether the model got the facts right is
+scored by the eval, which calls the real model on each synthetic night in
+`src/family_brief/eval/cases/`. It is not part of the suite (real calls, quota, non-determinism).
+Run it once per release, on the commit you're about to tag. PRs don't need it (the issue loop's
+sandbox can't reach the model anyway), but you can run it before and after a risky prompt change:
+
+```bash
+python -m family_brief.eval --backend claude,codex --repeat 2   # or one backend with --model ...
+```
+
+It scores Briefs in every reviewed language (English, Chinese and Finnish), one scorecard each
+(`--language en`, `zh` or `fi` for one). Each run is saved under `~/ParentRecap/eval/` and
+compared with the previous one of the same language (runs saved before Briefs had a language count
+as `zh`); the spread column shows run-to-run noise. `--cases DIR` scores a private folder instead;
+the case format is described in `src/family_brief/eval/cases.py`.
+
+Keywords in `expect` need Chinese, English and Finnish alternatives; give the Finnish as stems
+(`lupalap`, `retk`), since a Finnish Brief inflects them. A keyword matches anywhere in the text,
+so check that a short stem can't hide in another word: `kuva` (photo) also matches `jatkuvat`
+(continue). Start it with a space (`" kuva"`) to match only at a word's start. A `notices` rule
+with `languages: [en, zh]` is checked only on Briefs in those languages, such as Finnish words an
+English or Chinese Brief must translate. A rule with `where: digest` checks the Digest's lines,
+which sit under no Kid, and `where: anywhere` the notices, action items and Digest together: a
+line the parents must never read, such as one saying there is nothing new, goes there.
+
+## Eval: trying another model
+
+Before switching the model, or the provider, check that the Brief stays as good, Finnish
+especially. Score the backend's own model and the candidate in one run:
+
+```bash
+python -m family_brief.eval --backend claude --model default,claude-haiku-5-5 --language fi --repeat 3
+```
+
+`--model` takes a comma-separated list; `default` is the model the backend picks itself, the one
+Parent Recap uses today. Every case runs on each model in turn, and each language gets one
+scorecard with a column per model. With `--repeat`, each cell shows the score and, in brackets, the
+spread across runs. A quality score worse than every run of the first model is marked ↓. Each
+model's run is also saved on its own, so a later single-model run compares with it.
+
+How to read it:
+
+- **Quality:** a model is good enough when its scores stay within the spread of the current
+  default: no ↓, and no case that is clean in every run of the default slips on the candidate
+  (Clean runs per case, then What slipped says why). Run at least `--repeat 3`: with fewer runs
+  the spread is too narrow to tell noise from a real slip.
+- **`placeholders_left`:** texts in the Brief that still show a placeholder (`⟦N1⟧`), plus
+  placeholders the model changed beyond repair, which the Brief gives as their kind's words
+  ("someone", "a link") where the night's text had the real name or link. A smaller model tends
+  to change them more often. It should stay at 0.
+- **Cost:** input, cache-write, cached-input and output tokens per night, turned into dollars per
+  night and per month (30 nights) from `src/family_brief/eval/prices.yaml`, the Anthropic API's
+  prices on the date it gives. A subscription bills none of it; this is what the maintainers' key
+  would pay (#186). A night is priced as the model the claude CLI says answered, so `default` gets
+  a price too. Codex reports no tokens, and a model missing from the table has no price: the card
+  says which. Update the table, and its date, before comparing a model it doesn't list.
+
+## Eval: masking the Kids' names too
+
+The AI filter's `mask_kids` switch, on by default since #300, sends each Kid's names, aliases and
+their case forms as Kid A, Kid B too (#268), and the eval does the same. To see what it costs a
+backend or language, score it without the switch and then with it, so the second run compares
+with the first:
+
+```bash
+python -m family_brief.eval --backend claude,codex --repeat 2 --no-mask-kids
+python -m family_brief.eval --backend claude,codex --repeat 2
+```
+
+The card of a run with it says `Kids as Kid A, Kid B`. Watch `kid_ok` and `cases_clean`
+especially, and the cases with a Kid's alias or genitive. ADR 0013 records why it is on.

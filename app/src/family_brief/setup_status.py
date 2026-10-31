@@ -1,0 +1,189 @@
+"""setup status — whether setup is done: the outcomes that decide it, each true or false with a
+one-line reason.
+
+1. installed — the program is installed
+2. doctor    — the health check has no ❌ (its ⚠️ warnings are named, but don't hold setup up)
+3. brief     — the first Brief reached the setup parent, the first Recipient; the
+               others' first Brief is the first evening one
+4. nightly   — the nightly job is loaded
+5. wake      — the wake schedule is set, or the Mac never sleeps; none on a Linux server
+
+The sixth, knowing to log in after a restart, is the setup skill's to confirm with the family, and
+the setup page shows it under its checklist of these five, four on a Linux server.
+It prints one line of JSON for the setup skill, or with --text a short line per outcome. Neither
+has a secret or message text in it: doctor's own details stay out, only the names of its checks
+that aren't OK are given.
+"""
+from __future__ import annotations
+
+import argparse
+import importlib.metadata
+import json
+import os
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from . import install_record, ops
+from .config import Config
+from .state import State
+from .system import jobs, profile, wake
+
+
+TITLES = {
+    "installed": "Program installed",
+    "doctor": "Health check has nothing to fix",
+    "brief": "First Brief reached the setup parent",
+    "nightly": "Nightly job loaded",
+    "wake": "Wake schedule set, or the Mac never sleeps",
+}
+
+
+@dataclass
+class Outcome:
+    outcome: str
+    ok: bool
+    reason: str
+    # Doctor's checks that aren't OK, for the setup page to name and say what to do about, with
+    # their details folded for the family to copy to us (#500): on a true outcome, its warnings.
+    checks: list[ops.Check] = field(default_factory=list)
+
+
+def register(steps) -> None:
+    p = steps.add_parser("status", help="Report whether setup is done: each outcome that decides "
+                         "it, true or false, with a reason")
+    p.add_argument("--text", action="store_true", help="A short line per outcome instead of JSON")
+    p.set_defaults(func=cmd_status)
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    outcomes = check(args.config)
+    done = all(o.ok for o in outcomes)
+    if args.text:
+        for o in outcomes:
+            print(f"{ops.OK if o.ok else ops.FAIL} {TITLES[o.outcome]}: {o.reason}")
+    else:
+        print(json.dumps({"result": "done" if done else "not-done",
+                          "outcomes": [{"outcome": o.outcome, "ok": o.ok, "reason": o.reason}
+                                       for o in outcomes]}, ensure_ascii=False))
+    return 0 if done else 1
+
+
+def check(config: str | None) -> list[Outcome]:
+    """Each outcome, in order, for the config at `config`. The setup page's Finish checks these too."""
+    try:
+        cfg: Config | None = Config.load(config)
+    except Exception:  # doctor names what's wrong with it
+        cfg = None
+    schedule = (cfg or Config(kids=[])).schedule
+    hour, minute = schedule.daily_hour, schedule.daily_minute
+    outcomes = [_installed(), _doctor(config), _brief(cfg), _nightly(hour, minute)]
+    return [*outcomes, _wake(hour, minute)] if wake.sleeps() else outcomes
+
+
+def _installed() -> Outcome:
+    if _in_container():
+        # The image is the installation: the app is this very package, installed into /opt/venv,
+        # with no folder of its own to look for.
+        try:
+            version = importlib.metadata.version("family-brief")
+        except importlib.metadata.PackageNotFoundError:
+            version = "unknown version"
+        return Outcome("installed", True, f"{version} in this container")
+    programs = [Path(p) for p in install_record.entries("program")] or \
+        [Path.home() / "ParentRecap" / "app"]
+    for program in programs:
+        try:
+            ours = re.search(r'^name\s*=\s*"family-brief"', (program / "pyproject.toml").read_text(encoding="utf-8"),
+                             re.M)
+        except OSError:
+            continue
+        if ours and (program / ".venv" / profile.current().command).exists():
+            version = _read(program / "VERSION") or "unknown version"
+            return Outcome("installed", True, f"{version} in {_show(program)}")
+    return Outcome("installed", False, f"Parent Recap isn't installed in "
+                   f"{', '.join(_show(p) for p in programs)}: {profile.current().reinstall}")
+
+
+def _in_container() -> bool:
+    """Whether this runs from the container image entrypoint.sh starts, which says so."""
+    return os.environ.get("PARENT_RECAP_CONTAINER", "").strip().lower() in ("1", "true", "yes")
+
+
+def _doctor(config: str | None) -> Outcome:
+    # Only the checks' names and statuses go into the reason: their details can quote an error.
+    results = ops.health_checks(config)
+    checks = _once_each([c for c in results if c.status != ops.OK])
+    if not checks:
+        return Outcome("doctor", True, f"all {len(results)} checks OK")
+    not_ok = list(dict.fromkeys(f"{c.item} {c.status.strip()}" for c in checks))
+    # Only a ❌ holds setup up; a ⚠️ is named, with what to do, but the Brief works without it.
+    if all(c.status == ops.WARN for c in checks):
+        return Outcome("doctor", True, f"no check failed, {len(not_ok)} of {len(results)} have a "
+                       f"warning: {', '.join(not_ok)} (run parent-recap doctor to see why)", checks)
+    return Outcome("doctor", False, f"{len(not_ok)} of {len(results)} checks aren't OK: "
+                   f"{', '.join(not_ok)} (run parent-recap doctor to see why)", checks)
+
+
+def _once_each(checks: list[ops.Check]) -> list[ops.Check]:
+    """Each check once, with the details of the checks the same but for them, one per line."""
+    same: dict[ops.Check, list[str]] = {}
+    for c in checks:
+        same.setdefault(c._replace(detail=""), []).append(c.detail)
+    return [c._replace(detail="\n".join(dict.fromkeys(details))) for c, details in same.items()]
+
+
+def _brief(cfg: Config | None) -> Outcome:
+    if cfg is None:
+        return Outcome("brief", False, "the config can't be read, so its Recipients aren't known")
+    to = [*(r.address for r in cfg.email.to if cfg.email.enabled),
+          *(cfg.imessage.recipients if cfg.sends_imessage() else [])]
+    if not to:
+        return Outcome("brief", False, "the Brief goes to nobody: email.to is empty or email is off")
+    parent, others = to[0], to[1:]
+    if State(cfg.resolved_state_path()).delivered_at(parent) is None:
+        return Outcome("brief", False, f"no Brief has gone out to {parent} yet (send the first one "
+                       "from the setup page, or with parent-recap bg run --lookback-hours 72)")
+    later = f", and {', '.join(others)} get theirs with the evening Brief" if others else ""
+    return Outcome("brief", True, f"sent to {parent}{later}")
+
+
+def _nightly(hour: int, minute: int) -> Outcome:
+    label = jobs.system_name(jobs.DAILY)
+    if jobs.DAILY in jobs.installed():
+        return Outcome("nightly", True, f"{label} runs every day at {hour:02d}:{minute:02d}")
+    return Outcome("nightly", False, f"{label} isn't loaded: run parent-recap schedule install")
+
+
+def _wake(hour: int, minute: int) -> Outcome:
+    status = wake.status(hour, minute)
+    if status.never_sleeps:
+        return Outcome("wake", True, "this computer never sleeps, so it needs no wake schedule")
+    wake_h, wake_m = wake.time(hour, minute)
+    if status.ours:
+        return Outcome("wake", True, f"the computer wakes at {wake_h:02d}:{wake_m:02d} every day")
+    if not wake.has_own_schedule():  # the job's task wakes the PC, once the family's setting lets it
+        return Outcome("wake", False, "Allow wake timers is off, so the PC doesn't wake for the "
+                       "Brief, which then only comes on evenings it's awake. Only the family can "
+                       f"turn it on: {wake.manual_step(hour, minute)}")
+    install = "parent-recap schedule install"
+    if status.others:  # replaced only once the family agrees
+        install = (f"{install} --replace-wake once the family agrees to replace this Mac's other "
+                   f"repeating wake schedule ({', '.join(status.others)})")
+    step = wake.manual_step(hour, minute)
+    by_hand = f", or the family runs this in Terminal: {step}" if step else ""
+    return Outcome("wake", False, f"the Mac sleeps and doesn't wake at {wake_h:02d}:{wake_m:02d} "
+                   f"every day, so the Brief only comes on nights it's awake. Run {install}, "
+                   f"which sets it through macOS's administrator dialog{by_hand}")
+
+
+def _read(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _show(p: Path) -> str:
+    home = Path.home()
+    return f"~/{p.relative_to(home).as_posix()}" if p.is_relative_to(home) else str(p)

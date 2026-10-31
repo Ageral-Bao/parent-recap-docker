@@ -1,0 +1,719 @@
+"""The setup page's Wilma sign-in (ADR 0008): the town list, the wilma CLI's profile, and the check.
+
+The wilma CLI signs in on screens of its own, but every command reads its saved profiles from
+one JSON file. So the page asks for the town and the Wilma username and password
+itself, this writes that profile the way the CLI does after its own sign-in, and the CLI's Kid
+list checks that it works. The format isn't documented, so setup installs the CLI version below,
+install.sh moves an installed one to it (update()), and tests/e2e/test_setup_wilma.py checks the
+profile written against that version's way of reading it.
+
+The CLI is installed and run with Parent Recap's own Node, in its own folder (`own_node`, ADR 0011).
+The town list is Wilma's public tenant list, the copy the CLI ships inside its wilma-client.
+The password goes only into the CLI's own owner-only file, lightly encoded as the CLI keeps it,
+and for the check into an owner-only copy of it that goes right after, never onto a command
+line, into a log or back to the page.
+
+The Terminal sign-in window runs the CLI's own screens instead, with a guide in the family's
+language: `setup wilma` opens it, and the page offers it when its own sign-in fails for any reason
+but a wrong password.
+"""
+from __future__ import annotations
+
+import base64
+import json
+import math
+import os
+import select
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import unicodedata
+from contextlib import suppress
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit
+
+from . import failure, install_record, own_node, private_files
+from .collectors import wilma
+from .setup_report import outcome, program
+from .system import desktop
+from .system import profile as system_profile  # `profile` is the wilma CLI's here
+
+try:  # the Wilma window's pseudo-terminal, which Windows doesn't have yet
+    import fcntl
+    import pty
+    import termios
+    import tty
+except ImportError:
+    pass
+
+WILMA_CLI_VERSION = "2.1.2"
+PACKAGE = own_node.WILMA_PACKAGE
+INSTALL_SECONDS = 300
+SALT = "wilmai::"  # the CLI's own, in front of the password before it's Base64-encoded
+# What the CLI keeps next to its config: the Wilma sessions its commands carry on with (from 2.0),
+# and its note of the newest version on npm.
+SESSIONS = "wilmai-sessions.json"
+VERSION_CHECK = "version-check.json"
+MIN_QUERY = 2
+MAX_TOWNS = 20
+# The Wilma address of each city in "City presets" in docs/config.md.
+WILMA_CITIES = {
+    "espoo.inschool.fi": "Espoo",
+    "helsinki.inschool.fi": "Helsinki",
+    "yvkoulut.inschool.fi": "Helsinki",
+    "vantaa.inschool.fi": "Vantaa",
+    "kauniainen.inschool.fi": "Kauniainen",
+}
+WILMA_POLL_SECONDS = 2
+WILMA_PAGE_POLL_SECONDS = 0.2  # in the window, so it ends the CLI as soon as it has signed in
+# The Wilma window's own text, in the reviewed languages; any other language gets the English.
+# Wilma comes before the AI login in setup, so there's no AI yet to translate it.
+WILMA_WINDOW = {
+    "en": {
+        "guide": ["Parent Recap: sign in to Wilma",
+                  "1. Type your town in Finnish, for example Espoo, Helsinki or Vantaa, and pick "
+                  "it from the list.",
+                  "2. Sign in with the same username and password as on the Wilma website or "
+                  "app. If you don't remember them, look in your browser's saved passwords."],
+        # In place of the guide's first step on Windows, where Wilma's own page signs in.
+        "page": "1. Wilma's sign-in page opens in your browser. Type your town there in Finnish, "
+                "for example Espoo, Helsinki or Vantaa, and pick it from the list.",
+        "signed_in": "You're signed in to Wilma.",
+        "close": "You can close this window.",
+    },
+    "zh": {
+        "guide": ["Parent Recap：登录 Wilma",
+                  "1. 用芬兰语输入你所在的城市，例如 Espoo、Helsinki 或 Vantaa，然后在列表里选中它。",
+                  "2. 用你在 Wilma 网站或 App 上的用户名和密码登录。如果记不清，可以在浏览器保存的密码里找到。"],
+        "page": "1. 浏览器会打开 Wilma 的登录页面。在那里用芬兰语输入你所在的城市，例如 Espoo、Helsinki 或 "
+                "Vantaa，然后在列表里选中它。",
+        "signed_in": "已登录 Wilma。",
+        "close": "可以关闭这个窗口了。",
+    },
+    "fi": {
+        "guide": ["Parent Recap: kirjaudu Wilmaan",
+                  "1. Kirjoita kuntasi nimi suomeksi, esimerkiksi Espoo, Helsinki tai Vantaa, ja "
+                  "valitse se listasta.",
+                  "2. Kirjaudu samalla käyttäjätunnuksella ja salasanalla kuin Wilman "
+                  "verkkosivulla tai sovelluksessa. Jos et muista niitä, katso ne selaimesi "
+                  "tallennetuista salasanoista."],
+        "page": "1. Wilman kirjautumissivu aukeaa selaimeesi. Kirjoita siellä kuntasi nimi "
+                "suomeksi, esimerkiksi Espoo, Helsinki tai Vantaa, ja valitse se listasta.",
+        "signed_in": "Olet kirjautunut Wilmaan.",
+        "close": "Voit sulkea tämän ikkunan.",
+    },
+}
+# Node's console.clear(), which the wilma CLI calls before each of its questions.
+NODE_CLEAR = b"\x1b[1;1H\x1b[0J"
+# What the wilma CLI asks once the sign-in has worked. Setup reads every Kid, so the family never
+# sees either: the window answers the first itself and ends the CLI before the second.
+WILMA_STUDENT_PICKER = b"Select student"
+WILMA_MENU = b"What do you want to view?"
+
+
+def installed() -> bool:
+    return own_node.wilma() is not None
+
+
+def installed_version(folder: Path | None = None) -> str | None:
+    """The version of the wilma CLI in `folder` (Parent Recap's own, unless given), as its package
+    says, or None."""
+    package = own_node.modules(folder or own_node.wilma_folder()) / PACKAGE / "package.json"
+    try:
+        version = json.loads(package.read_text(encoding="utf-8")).get("version")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return version if isinstance(version, str) else None
+
+
+def install() -> dict[str, Any]:
+    """Installs the pinned wilma CLI with Parent Recap's own Node into its folder, unless it's
+    there, and adds that folder to setup's record. Returns its `result`: `installed`, `no-node`
+    (the install didn't leave Parent Recap's own Node) or `install-failed`, which comes with the
+    `reason` npm failed, for the setup page to show."""
+    if installed():
+        return {"result": "installed"}
+    npm = own_node.npm()
+    if npm is None:
+        return {"result": "no-node"}
+    # Before npm runs, so uninstall removes the folder however this install ends.
+    install_record.add("wilma-cli", str(own_node.wilma_folder()))
+    reason = _npm_install(npm)
+    return {"result": "install-failed", "reason": reason} if reason else {"result": "installed"}
+
+
+def update() -> str:
+    """Moves the wilma CLI in Parent Recap's folder to the pinned version, which install.sh asks
+    for on every update, so a Household that connected Wilma gets the version a release pins. A
+    CLI left half there, as by an npm ended partway before the install was staged, is installed
+    again when the CLI's config has a sign-in. Returns `not-installed` (no CLI to update, so
+    nothing is installed), `up-to-date`, `updated`, `no-node` or `update-failed`, which leaves the
+    CLI that was there as it was."""
+    if installed() and installed_version() == WILMA_CLI_VERSION:
+        return "up-to-date"
+    if not (installed() or _half_there()):
+        return "not-installed"
+    npm = own_node.npm()
+    if npm is None:
+        return "no-node"
+    return "updated" if _npm_install(npm) is None else "update-failed"
+
+
+def _half_there() -> bool:
+    """Whether the CLI's folder is there, or setup's record has it, without a CLI that runs, while
+    the CLI's config has a sign-in: Wilma was connected, and the CLI broke."""
+    folder = own_node.wilma_folder()
+    return (folder.exists() or str(folder) in install_record.entries("wilma-cli")) \
+        and bool(profile_ids(config_path()))
+
+
+def _npm_install(npm: list[str]) -> str | None:
+    """Has `npm`, on Parent Recap's own Node, install the pinned CLI. Returns why it didn't, which
+    is also logged, or None once it did. It installs into a new folder next to the CLI's, which
+    takes the CLI's place only once npm has finished and left the pinned version, so an npm that
+    fails, or is ended at the time limit, changes nothing."""
+    return own_node.install_staged(own_node.wilma_folder(), lambda staging: _npm_run(npm, staging),
+                                   "The wilma CLI didn't install", INSTALL_SECONDS)
+
+
+def _npm_run(npm: list[str], staging: Path) -> str | None:
+    """Runs `npm` to install the pinned CLI into `staging`. Returns why that didn't leave the CLI
+    there, in words a photo of the setup page carries, or None."""
+    proc = own_node.run_npm(npm, install_args(staging), INSTALL_SECONDS)
+    if proc.returncode != 0:
+        return failure.exited("npm", proc.returncode, proc.stderr, proc.stdout)
+    version = installed_version(staging)
+    if version is None:
+        return "npm finished without installing the wilma program."
+    if version != WILMA_CLI_VERSION:
+        return f"npm installed version {version} of the wilma program, not {WILMA_CLI_VERSION}."
+    if own_node.wilma_cli(staging) is None:
+        return "npm installed the wilma program without the file that runs it."
+    return None
+
+
+def install_args(folder: Path) -> list[str]:
+    """npm's arguments that install the pinned CLI (ADR 0008) into `folder`, laid out as a global
+    install: `bin/wilma`, and the package in `lib/node_modules` (`own_node` has Windows' layout).
+    `_npm_install` gives a new folder,
+    which then takes the place of Parent Recap's own."""
+    return ["install", "-g", "--prefix", str(folder), f"{PACKAGE}@{WILMA_CLI_VERSION}"]
+
+
+def tenants() -> list[dict[str, Any]] | None:
+    """Each Wilma in the tenant list the installed CLI ships, as its address, its name and its
+    towns (Finnish, Swedish), or None without the CLI or the list."""
+    command = own_node.wilma()
+    if command is None:
+        return None
+    package = Path(os.path.realpath(command[-1])).parent.parent  # past dist/index.js
+    for path in (package / "node_modules" / "@wilm-ai" / "wilma-client" / "tenant_list.json",
+                 package.parent / "wilma-client" / "tenant_list.json"):  # where npm hoists it
+        try:
+            listed = json.loads(path.read_text(encoding="utf-8"))["wilmat"]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if isinstance(listed, list):
+            return [t for t in map(_tenant, listed) if t is not None]
+    return None
+
+
+def _tenant(raw: Any) -> dict[str, Any] | None:
+    if not (isinstance(raw, dict) and isinstance(raw.get("url"), str) and raw["url"]):
+        return None
+    towns = []
+    for m in raw.get("municipalities") or []:
+        if isinstance(m, dict):
+            fi = m.get("name_fi") or m.get("nameFi")
+            sv = m.get("name_sv") or m.get("nameSv") or fi
+            if isinstance(fi, str) and fi and (fi, sv) not in towns:
+                towns.append((fi, sv))
+    name = raw.get("name")
+    return {"url": raw["url"], "name": name if isinstance(name, str) and name else raw["url"],
+            "towns": towns}
+
+
+def search(listed: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
+    """The entries `query` finds, by town in Finnish or Swedish first, then by name, each with
+    the town it's for: the one found, or the entry's first."""
+    needle = _fold(query)
+    if len(needle) < MIN_QUERY:
+        return []
+    by_town, by_name = [], []
+    for t in listed:
+        town = next((fi for fi, sv in t["towns"] if needle in _fold(fi) or needle in _fold(sv)),
+                    None)
+        if town is not None:
+            by_town.append({"url": t["url"], "name": t["name"], "town": town})
+        elif needle in _fold(t["name"]):
+            by_name.append({"url": t["url"], "name": t["name"],
+                            "town": t["towns"][0][0] if t["towns"] else None})
+    return (by_town + by_name)[:MAX_TOWNS]
+
+
+def _fold(text: str) -> str:
+    """For searching: no case, and no accents, so jarvenpaa finds Järvenpää."""
+    return "".join(c for c in unicodedata.normalize("NFKD", text.strip().casefold())
+                   if not unicodedata.combining(c))
+
+
+def entry(listed: list[dict[str, Any]], url: str) -> dict[str, Any] | None:
+    return next((t for t in listed if t["url"] == url), None)
+
+
+def towns_of(t: dict[str, Any]) -> list[str]:
+    return [fi for fi, _ in t["towns"]]
+
+
+def obfuscate(password: str) -> str:
+    """The password as the CLI keeps it: Base64, not encrypted (ADR 0008)."""
+    return base64.b64encode((SALT + password).encode()).decode()
+
+
+def sign_in(tenant: dict[str, Any], username: str, password: str) -> dict[str, Any]:
+    """Writes the CLI's profile for `username` at the Wilma `tenant`, checks it with the CLI's Kid
+    list, and once that works saves it in the CLI's config. Returns its `result`: `signed-in` with
+    the `kids`, or `wrong-password`, `sign-in-failed`, which comes with the `reason` the CLI gave,
+    for the setup page to show, `no-kids` or `not-installed`. Unless signed in, the CLI's config
+    stays as it was, so a wrong password isn't kept and an earlier sign-in still works. A new
+    profile goes in setup's record."""
+    out, students = check(tenant, username, password)
+    if out["result"] != "signed-in":
+        return out
+    path = config_path()
+    profiles_before = profile_ids(path)
+    # With the Kids the CLI saved in the profile it checked.
+    profile_id = write_profile(path, tenant, username, password, students)
+    record_profile(profile_id, profiles_before)
+    return out
+
+
+def check(tenant: dict[str, Any], username: str,
+          password: str) -> tuple[dict[str, Any], list[dict[str, Any]] | None]:
+    """Signs in to the Wilma `tenant` as `username` with the CLI's Kid list, saving nothing in
+    the CLI's config. Returns sign_in's result, and the Kids as the CLI saves them in a profile
+    (`write_profile`'s `students`), which the hosted sign-up writes under the Household's own
+    user (ADR 0031)."""
+    if not installed():
+        return {"result": "not-installed"}, None
+    # From 2.0 the CLI's commands read every profile in its config, so an earlier one that works
+    # would hide a wrong password. The new one is checked alone, in a config of its own in an
+    # owner-only folder, which also takes the session the CLI saves next to it and goes with it.
+    with tempfile.TemporaryDirectory(prefix="parent-recap-wilma-") as folder:
+        alone = Path(folder) / "config.json"
+        checked_id = write_profile(alone, tenant, username, password)
+        out: dict[str, Any]
+        try:
+            kids = [k for k in wilma.list_kids(alone) if isinstance(k.get("name"), str) and k["name"]]
+            # No Kids: not a guardian's account.
+            out = {"result": "signed-in", "kids": kids} if kids else {"result": "no-kids"}
+        except wilma.WilmaError as e:
+            out = {"result": "wrong-password"} if e.wrong_password else {
+                "result": "sign-in-failed",
+                "reason": failure.logged("Wilma didn't sign in", failure.raised(e, "Signing in"))}
+        checked = profile(alone, checked_id) or {}
+    return out, checked.get("students") if out["result"] == "signed-in" else None
+
+
+def record_profile(profile_id: str | None, before: list[str]) -> None:
+    """Adds the profile signed in with to setup's record, unless it was there before setup."""
+    if profile_id is not None and profile_id not in before:
+        install_record.add("wilma-profile", profile_id)
+
+
+def write_profile(path: Path, tenant: dict[str, Any], username: str, password: str,
+                  students: Any = None) -> str:
+    """Saves the profile as the CLI saves one after its own sign-in (saveLogin from 2.0): in place
+    of the profile for the same account, the same Wilma and username in any case, keeping its id,
+    its place and its two-step key, or else after the others, and the one its commands use first.
+    `students` are the Kids the CLI listed for it, as it saves them. Returns its id."""
+    config = _read(path)
+    url = normalized(tenant["url"])
+
+    def same(p: Any) -> bool:
+        return isinstance(p, dict) and normalized(str(p.get("tenantUrl", ""))) == url \
+            and str(p.get("username", "")).lower() == username.lower()
+    at = next((i for i, p in enumerate(config["profiles"]) if same(p)), None)
+    previous = config["profiles"][at] if at is not None else None
+    kids = [{"studentNumber": s["studentNumber"], "name": s["name"]} for s in students or []
+            if isinstance(s, dict) and isinstance(s.get("studentNumber"), str)
+            and isinstance(s.get("name"), str)]
+    last = next((s for s in kids
+                 if previous and s["studentNumber"] == previous.get("lastStudentNumber")),
+                kids[0] if kids else None)
+    stored = {
+        "id": previous["id"] if previous and isinstance(previous.get("id"), str)
+        else f"{url}|{username}",
+        "tenantUrl": url,
+        "tenantName": tenant["name"],
+        "username": username,
+        "passwordObfuscated": obfuscate(password),
+        "totpSecretObfuscated": previous.get("totpSecretObfuscated") if previous else None,
+        "students": kids,
+        "lastStudentNumber": last["studentNumber"] if last else None,
+        "lastStudentName": last["name"] if last else None,
+        "lastUsedAt": datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+                              .replace("+00:00", "Z"),
+    }
+    others = [p for p in config["profiles"] if not same(p)]
+    config["profiles"] = [*others, stored] if at is None else [*others[:at], stored, *others[at:]]
+    config["lastProfileId"] = stored["id"]
+    _write_config(path, config)
+    return stored["id"]
+
+
+def normalized(url: str) -> str:
+    """A Wilma address as the CLI compares two (from 2.0): its scheme and host in lower case,
+    with no slash at the end."""
+    parts = urlsplit(url.strip())
+    if parts.scheme and parts.netloc:
+        return f"{parts.scheme.lower()}://{parts.netloc.lower()}{parts.path}".rstrip("/")
+    return url.strip().rstrip("/")
+
+
+def profiles(path: Path) -> list[dict[str, Any]]:
+    """The CLI's saved profiles, passwords included."""
+    return [p for p in _read(path)["profiles"] if isinstance(p, dict)]
+
+
+def for_the_household(profile: dict[str, Any], kids: set[str]) -> bool:
+    """Whether the CLI's `profile` is a sign-in the Household's Brief depends on: one setup made,
+    one the CLI saved one of `kids` for (their names as Wilma spells them, case folded), or one
+    whose Kids aren't known. From 2.0 the CLI signs in with every profile, also one left from an
+    earlier use of it, for none of the Kids."""
+    if profile.get("id") in install_record.entries("wilma-profile"):
+        return True
+    names = [s.get("name") for s in profile.get("students") or [] if isinstance(s, dict)]
+    names = [n.casefold() for n in names if isinstance(n, str) and n]
+    return not names or not kids or any(n in kids for n in names)
+
+
+def profile_ids(path: Path) -> list[str]:
+    return [p["id"] for p in _read(path)["profiles"]
+            if isinstance(p, dict) and isinstance(p.get("id"), str)]
+
+
+def last_profile_id(path: Path) -> str | None:
+    """The profile the CLI's commands use first: the one signed in with last."""
+    last = _read(path).get("lastProfileId")
+    return last if isinstance(last, str) else None
+
+
+def profile(path: Path, profile_id: str) -> dict[str, Any] | None:
+    """The CLI's saved profile with that id, password included, or None."""
+    return next((p for p in _read(path)["profiles"]
+                 if isinstance(p, dict) and p.get("id") == profile_id), None)
+
+
+def remove_profile(path: Path, profile_id: str) -> None:
+    """Removes one profile, with its password, and keeps the CLI's others, whose first its
+    commands then start with. The Wilma sessions the CLI saved go too, as when it removes a sign-in
+    itself, so none outlasts its password: the others sign in again. Without other profiles, the
+    file goes, with the CLI's note of the newest version, and its folder when that is empty."""
+    config = _read(path)
+    config["profiles"] = [p for p in config["profiles"]
+                          if not (isinstance(p, dict) and p.get("id") == profile_id)]
+    path.with_name(SESSIONS).unlink(missing_ok=True)
+    if not config["profiles"]:
+        path.unlink(missing_ok=True)
+        path.with_name(VERSION_CHECK).unlink(missing_ok=True)
+        try:
+            path.parent.rmdir()
+        except OSError:
+            pass
+        return
+    if config.get("lastProfileId") == profile_id:
+        config["lastProfileId"] = next((p["id"] for p in config["profiles"] if isinstance(p, dict)
+                                        and isinstance(p.get("id"), str)), None)
+    _write_config(path, config)
+
+
+def _read(path: Path) -> dict[str, Any]:
+    try:
+        config = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        config = {}
+    if not (isinstance(config, dict) and isinstance(config.get("profiles"), list)):
+        config = {"profiles": []}
+    return config
+
+
+def _write_config(path: Path, config: dict[str, Any]) -> None:
+    _write(path, (json.dumps(config, indent=2, ensure_ascii=False) + "\n").encode())
+
+
+def config_path() -> Path:
+    """Where the wilma CLI keeps its config, found the way the CLI finds it."""
+    if os.environ.get("WILMAI_CONFIG_PATH"):
+        return Path(os.environ["WILMAI_CONFIG_PATH"])
+    base = os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config"
+    return Path(base) / "wilmai" / "config.json"
+
+
+def _write(path: Path, data: bytes) -> None:
+    """Owner-only, as the CLI writes it, in one step, so the CLI never reads half of it."""
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    os.chmod(tmp, 0o600)
+    tmp.replace(path)
+
+
+# ---------------------------------------------------------------- the Terminal sign-in window
+
+def sign_in_in_terminal(language: str, timeout: int, *, no_open: bool = False) -> dict[str, Any]:
+    """The wilma CLI signs in only on its own interactive screen, so this runs that screen in a
+    Terminal window and waits for its result: the CLI saves its config once the sign-in has
+    worked, and the window's script records the screen's exit status when it closes. The
+    password stays between the family and the CLI; this reads only the Wilma address from the
+    CLI's config. Returns the step's outcome as `setup wilma` prints it; the setup page offers
+    this window when its own sign-in fails for any reason but a wrong password (ADR 0008).
+    Without the CLI it installs the pinned one first, as the page does. The CLI it installed
+    and a profile new to the CLI go in setup's record."""
+    again = f"{program()} setup wilma"
+    got = install()
+    if got["result"] == "no-node":
+        return outcome("not-installed", "Parent Recap's own Node, which the wilma CLI runs on, "
+                       "is missing. The family pastes the Parent Recap install line into "
+                       f"Terminal again, then run: {again}")
+    if got["result"] != "installed":
+        return outcome("not-installed", "The wilma CLI didn't install. The family checks that "
+                       f"the Mac is online, then run: {again}", reason=got["reason"])
+    config = config_path()
+    profiles_before = profile_ids(config)
+    with tempfile.TemporaryDirectory(prefix="parent-recap-wilma-") as tmp:
+        status = Path(tmp) / "exit-status"
+        seen = _mtime(config)
+        if not no_open:
+            if not desktop.open_terminal(sign_in_window(language, status), {}, "Wilma sign-in"):
+                return outcome("no-terminal", "Terminal didn't open. The family runs wilma in "
+                               f"Terminal and signs in there, then run: {again} --no-open")
+
+        polls = max(1, math.ceil(timeout / WILMA_POLL_SECONDS))
+        check_now = no_open  # already signed in, perhaps
+        for poll in range(polls + 1):
+            exit_status = _exit_status(status)
+            config_mtime = _mtime(config)
+            if check_now or config_mtime != seen or exit_status is not None:
+                check_now, seen = False, config_mtime
+                try:
+                    kids = wilma.list_kids()
+                except wilma.WilmaError:
+                    kids = None
+                if kids is not None:
+                    record_profile(last_profile_id(config), profiles_before)
+                    address = _wilma_address(config)
+                    return outcome("signed-in", city=WILMA_CITIES.get(address or ""),
+                                   wilma_address=address, kids=kids)
+                if exit_status == 0:
+                    return outcome("not-signed-in", "The Wilma screen was closed before signing "
+                                   f"in. Run this again when the family is ready: {again}")
+                if exit_status is not None:
+                    why = failure.exited("The Wilma screen", exit_status, None, None)
+                    return outcome("sign-in-failed", "Wilma didn't sign in. The family checks "
+                                   "the city and the parent account's username and password, "
+                                   f"then signs in again: {again}",
+                                   reason=failure.logged("Wilma didn't sign in", why))
+            if poll < polls:
+                time.sleep(WILMA_POLL_SECONDS)
+    return outcome("timeout", f"The family didn't sign in to Wilma within {timeout} "
+                   "seconds. If the Wilma window is still open, they finish there, then run: "
+                   f"{again} --no-open. Otherwise run: {again}")
+
+
+def sign_in_window(language: str, status: Path) -> list[str]:
+    """The Wilma window's command, which records at `status` how its screen ended. This Python,
+    since the window's PATH may not lead to this program."""
+    return [sys.executable, "-m", "family_brief", "setup", "wilma", "--screen",
+            "--language", language, "--status", str(status)]
+
+
+def sign_in_screen(language: str, status: Path | None) -> int:
+    """In the window: the CLI's sign-in under the guide in `language`. Returns 0 once signed in,
+    otherwise the CLI's exit status, and records it at `status` for the step waiting on it."""
+    exit_status = 1
+    try:
+        if system_profile.current().pseudo_terminal:
+            exit_status = _sign_in_terminal_screen(language)
+        else:
+            exit_status = _sign_in_page(language)
+    finally:
+        if status is not None:
+            with suppress(OSError):  # the step stopped waiting and took its folder away
+                status.write_text(f"{exit_status}\n", encoding="utf-8")
+    return exit_status
+
+
+def _sign_in_page(language: str) -> int:
+    """On Windows, which has no pseudo-terminal for the CLI's own screens: runs the wilma CLI's
+    sign-in page (`wilma login`, from 2.1), which the CLI opens in the browser, on Parent Recap's
+    own Node under the guide in this window. Once the CLI has saved its profile it's ended, before
+    it waits for more Wilmas. Ctrl+C ends it too. Returns 0 once signed in, otherwise the CLI's
+    exit status."""
+    text = WILMA_WINDOW.get(language.lower(), WILMA_WINDOW["en"])
+    guide = [text["guide"][0], text["page"], *text["guide"][2:]]
+    print("\n".join(guide) + "\n", flush=True)
+    config = config_path()
+    seen = _mtime(config)
+    command = own_node.wilma()
+    if command is None:
+        return 127
+
+    def saved() -> bool:  # the CLI renames its config into place, so it reads whole
+        return _mtime(config) != seen and _wilma_address(config) is not None
+    cli = subprocess.Popen([*command, "login"], env=own_node.wilma_env())
+    try:
+        while not saved() and cli.poll() is None:
+            time.sleep(WILMA_PAGE_POLL_SECONDS)
+    except KeyboardInterrupt:  # the CLI has it too, and ends
+        pass
+    signed_in = saved()
+    if cli.poll() is None:
+        cli.terminate()
+    exit_status = cli.wait()
+    print(f"\n{text['signed_in']} {text['close']}" if signed_in else f"\n{text['close']}",
+          flush=True)
+    return 0 if signed_in else exit_status
+
+
+def _sign_in_terminal_screen(language: str) -> int:
+    """Runs the wilma CLI's sign-in on Parent Recap's own Node in this window, through a
+    pseudo-terminal so this sees what it shows: the guide stays on top of each question the CLI
+    clears the screen for, the student picker is answered (setup reads every Kid, so which one
+    doesn't matter) and hidden, and once the CLI has saved its profile it's ended, before its
+    menu, whose default choice fails with a 403 for some accounts. Returns 0 once signed in,
+    otherwise the CLI's exit status."""
+    text = WILMA_WINDOW.get(language.lower(), WILMA_WINDOW["en"])
+    guide = "\r\n".join(text["guide"]).encode() + b"\r\n\r\n"
+    out = sys.stdout.buffer
+    out.write(guide)
+    out.flush()
+    config = config_path()
+    seen = _mtime(config)
+    command = own_node.wilma()
+    if command is None:
+        return 127
+    env = own_node.wilma_env()  # before the fork: the child only runs the CLI
+    pid, fd = pty.fork()
+    if pid == 0:
+        try:
+            os.execve(command[0], command, env)
+        finally:
+            os._exit(127)
+    # The CLI truncates its config before writing it, so a new one counts once it reads whole.
+    signed_in = _show_sign_in(
+        fd, guide, lambda: _mtime(config) != seen and _wilma_address(config) is not None)
+    if signed_in:
+        os.kill(pid, signal.SIGTERM)
+    # Closed before the wait, since nothing reads the CLI any more: macOS may not let it finish
+    # exiting while its terminal holds output nobody has read, such as the menu it shows just as
+    # it's ended (#216).
+    os.close(fd)
+    status = os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1])
+    if signed_in:
+        out.write(b"\x1b[H\x1b[2J\x1b[3J")  # the screen and the scrollback
+        out.write(f"{text['signed_in']} {text['close']}\n".encode())
+    else:
+        out.write(f"\n{text['close']}\n".encode())
+    out.flush()
+    return 0 if signed_in else status
+
+
+def _show_sign_in(fd: int, guide: bytes, saved) -> bool:
+    """Passes the family's typing to the CLI on `fd` and what it shows to the window, until the
+    CLI has saved its profile (True) or has ended without (False)."""
+    stdin, out = sys.stdin.fileno(), sys.stdout.buffer
+    terminal = os.isatty(stdin)
+    if terminal:
+        def same_size(*_a: Any) -> None:
+            fcntl.ioctl(fd, termios.TIOCSWINSZ, fcntl.ioctl(stdin, termios.TIOCGWINSZ, b"\0" * 8))
+        same_size()
+        signal.signal(signal.SIGWINCH, same_size)
+        before = termios.tcgetattr(stdin)
+        tty.setraw(stdin)
+    reading, hidden, last = [fd, stdin], False, b""
+    try:
+        while not saved():
+            ready = select.select(reading, [], [], 0.1)[0]
+            if stdin in ready:
+                typed = os.read(stdin, 1024)
+                if typed:
+                    os.write(fd, typed)
+                else:
+                    reading.remove(stdin)
+            if fd in ready:
+                try:
+                    shown = os.read(fd, 65536)
+                except OSError:  # the CLI has ended
+                    shown = b""
+                if not shown:
+                    return saved()
+                recent, last = last[-len(WILMA_MENU):] + shown, shown  # a question split in two
+                if not hidden and WILMA_STUDENT_PICKER in recent:
+                    os.write(fd, b"\r")  # once: the CLI shows the question again with the answer
+                hidden = hidden or WILMA_STUDENT_PICKER in recent or WILMA_MENU in recent
+                if not hidden:
+                    out.write(shown.replace(NODE_CLEAR, NODE_CLEAR + guide))
+                    out.flush()
+        return True
+    finally:
+        if terminal:
+            termios.tcsetattr(stdin, termios.TCSAFLUSH, before)
+            signal.signal(signal.SIGWINCH, signal.SIG_DFL)
+
+
+def _mtime(path: Path) -> int | None:
+    try:
+        return path.stat().st_mtime_ns
+    except OSError:
+        return None
+
+
+def _exit_status(path: Path) -> int | None:
+    try:
+        return int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _wilma_address(config: Path) -> str | None:
+    """The host of the Wilma the family signed in to last, such as espoo.inschool.fi."""
+    try:
+        data = json.loads(config.read_text(encoding="utf-8"))
+        last = next(p for p in data["profiles"] if p.get("id") == data.get("lastProfileId"))
+        url = str(last["tenantUrl"])
+    except (OSError, ValueError, KeyError, TypeError, StopIteration):
+        return None
+    return urlsplit(url if "//" in url else f"//{url}").hostname
+
+
+def main(argv: list[str]) -> int:
+    """`python -m family_brief.setup_wilma update`, which install.sh runs. It says what changed,
+    if anything, and never fails the install: a CLI that couldn't be updated keeps working."""
+    if argv != ["update"]:
+        print("Usage: python -m family_brief.setup_wilma update", file=sys.stderr)
+        return 2
+    private_files.restrict_new_files()  # install.sh runs this with the shell's umask
+    try:
+        result = update()
+    except Exception:  # noqa: BLE001 - the install goes on, and the next one tries again
+        result = "update-failed"
+    said = {"updated": f"✅ The wilma CLI is updated to {WILMA_CLI_VERSION}.",
+            "update-failed": f"⚠️  The wilma CLI couldn't be updated to {WILMA_CLI_VERSION}, so "
+                             "Wilma is read with the one already there. Run the install again "
+                             "later.",
+            "no-node": f"⚠️  The wilma CLI couldn't be updated to {WILMA_CLI_VERSION}: Parent "
+                       "Recap's own Node is missing. Run the install again."}.get(result)
+    if said:
+        print(said)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

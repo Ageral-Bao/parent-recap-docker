@@ -1,0 +1,48 @@
+# Parent Recap on a server of your own: the evening Brief, read from Wilma, Gmail, WhatsApp and
+# MyClub, written by ChatGPT, and emailed to you.
+#
+#   docker compose up -d          # first run: serves the setup page (MODE=setup)
+#   docker compose logs -f        # the page's address, with its one-time code, is in there
+#   ... set it up in the browser ...
+#   MODE=daily docker compose up -d   # then the evening Brief, every day at DAILY_HOUR
+#
+# Nothing here holds anyone else's data: every volume is this Household's own, and the setup page
+# is where it gets filled in.
+services:
+  parent-recap:
+    image: ${PARENT_RECAP_IMAGE:-ghcr.io/ageral-bao/parent-recap:0.10.0}
+    container_name: parent-recap
+    restart: unless-stopped
+    environment:
+      # The Brief's hour, in this timezone.
+      TZ: ${TZ:-Europe/Helsinki}
+      DAILY_HOUR: "${DAILY_HOUR:-20}"
+      DAILY_MINUTE: "${DAILY_MINUTE:-0}"
+      # `setup` serves the setup page on SETUP_PORT; `daily` runs the evening job. Nothing listens
+      # on SETUP_PORT in `daily` mode, so the port can stay mapped.
+      MODE: "${MODE:-setup}"
+      SETUP_PORT: "${SETUP_PORT:-8090}"
+      # 0 keeps the setup page up as long as the container runs. A number stops it after that many
+      # minutes without a request.
+      SETUP_IDLE_MINUTES: "${SETUP_IDLE_MINUTES:-0}"
+      # How you reach this machine, so the address the container logs is the one your browser
+      # needs: http://<this machine's IP>:<SETUP_PORT>
+      SETUP_PUBLIC_URL: "${SETUP_PUBLIC_URL:-}"
+    ports:
+      - "${SETUP_PORT:-8090}:${SETUP_PORT:-8090}"
+    volumes:
+      # The config, the Gmail App Password and the run's state
+      - ./data/family:/root/.family
+      # The wilma CLI's sign-in
+      - ./data/wilmai:/root/.config/wilmai
+      # The ChatGPT sign-in Codex writes the Brief with
+      - ./data/codex:/root/.codex
+      # The WhatsApp Linked Device's pairing and message store
+      - ./data/linked-device:/root/ParentRecap/linked-device
+      # The Briefs themselves, one per day, plus the run logs
+      - ./data/archive:/root/ParentRecap/archive
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

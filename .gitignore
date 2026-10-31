@@ -1,0 +1,7 @@
+# The Household's own data: config, state, secrets, the WhatsApp pairing and every Brief.
+data/
+
+# A local build's leftovers
+*.pyc
+__pycache__/
+.venv/

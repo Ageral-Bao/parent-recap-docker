@@ -1,0 +1,78 @@
+"""Waking the computer every day for the evening job (ADR 0020). Each system has its adapter:
+`pmset` on macOS, 5 minutes before the job; on Windows the job's own task wakes the PC, once the
+family's "Allow wake timers" lets it (ADR 0021); a Linux server never sleeps."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from . import adapter
+
+_adapter = adapter("wake")
+
+# What setting the daily wake can say: no wake needed (`never-sleeps`, `already-set`), another
+# repeating wake schedule kept until the family agrees to replace it (`other-schedule`), set, or
+# not: the dialog was closed (`cancelled`), there was no dialog to ask in (`no-dialog`), or the
+# system doesn't list it after the dialog (`not-set`). Windows has no dialog, and says only
+# `never-sleeps`, `already-set` or `not-set`: the family's own setting doesn't allow the wake.
+RESULTS = ("set", "already-set", "never-sleeps", "other-schedule", "cancelled", "no-dialog",
+           "not-set")
+
+
+@dataclass(frozen=True)
+class WakeStatus:
+    ours: str | None       # the daily wake setup gives for the job's time, as the system lists it
+    others: list[str]      # the system's other repeating wakes, as it lists them
+    never_sleeps: bool     # set never to sleep, on every power source
+
+
+class NotCancelled(Exception):
+    """The wake schedule wasn't cancelled; the message says how the family can cancel it."""
+
+
+def time(hour: int, minute: int) -> tuple[int, int]:
+    """When the computer should wake for a job at hour:minute: 5 minutes before."""
+    wake_h, wake_m = divmod(hour * 60 + minute - 5, 60)
+    return wake_h % 24, wake_m
+
+
+def status(hour: int, minute: int) -> WakeStatus:
+    """The computer's repeating wakes, told apart into the one setup gives for a job at
+    hour:minute and the others."""
+    return _adapter.status(hour, minute)
+
+
+def set(hour: int, minute: int, replace: bool) -> str:
+    """Sets the daily wake for a job at hour:minute through the system's administrator dialog,
+    where the family types their password. Another repeating wake schedule is replaced only with
+    `replace`, so the family can decline before any dialog opens. Returns one of RESULTS."""
+    return _adapter.set(hour, minute, replace)
+
+
+def cancel() -> None:
+    """Cancels the computer's repeating wakes through the administrator dialog. Raises
+    NotCancelled."""
+    _adapter.cancel()
+
+
+def manual_step(hour: int, minute: int) -> str | None:
+    """What the family does themselves to set the daily wake for a job at hour:minute, when no
+    dialog can ask: on macOS a command to run in a terminal, on Windows the setting to turn on in
+    plain words; None where there is none."""
+    return _adapter.manual_step(hour, minute)
+
+
+def sleeps() -> bool:
+    """Whether this computer can sleep, so the evening job may need a wake-up at all: a Linux
+    server never does, and setup and `doctor` say nothing of one there."""
+    return _adapter.SLEEPS
+
+
+def has_own_schedule() -> bool:
+    """Whether setup's daily wake is a schedule of its own, which uninstall cancels: not on
+    Windows, where the job's task wakes the PC and "Allow wake timers" is the family's own."""
+    return _adapter.OWN_SCHEDULE
+
+
+def manual_cancel() -> str:
+    """The command the family runs in a terminal to cancel the computer's repeating wakes."""
+    return _adapter.MANUAL_CANCEL

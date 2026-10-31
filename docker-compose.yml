@@ -13,13 +13,16 @@ services:
     image: ${PARENT_RECAP_IMAGE:-ghcr.io/ageral-bao/parent-recap:0.10.0}
     container_name: parent-recap
     restart: unless-stopped
+    # A stop gives the WhatsApp Linked Device time to close its link before the next container
+    # opens one: WhatsApp ends the link when two connect with the same pairing.
+    stop_grace_period: 30s
     environment:
       # The Brief's hour, in this timezone.
       TZ: ${TZ:-Europe/Helsinki}
       DAILY_HOUR: "${DAILY_HOUR:-20}"
       DAILY_MINUTE: "${DAILY_MINUTE:-0}"
-      # `setup` serves the setup page on SETUP_PORT; `daily` runs the evening job. Nothing listens
-      # on SETUP_PORT in `daily` mode, so the port can stay mapped.
+      # `setup` serves the setup page on SETUP_PORT; `daily` runs the evening job with the page
+      # beside it. Nothing listens on SETUP_PORT in `setup` mode, so the port can stay mapped.
       MODE: "${MODE:-setup}"
       SETUP_PORT: "${SETUP_PORT:-8090}"
       # 0 keeps the setup page up as long as the container runs. A number stops it after that many
@@ -28,6 +31,9 @@ services:
       # How you reach this machine, so the address the container logs is the one your browser
       # needs: http://<this machine's IP>:<SETUP_PORT>
       SETUP_PUBLIC_URL: "${SETUP_PUBLIC_URL:-}"
+      # Pins the one-time code in the page's address, so it survives a restart and can be kept as a
+      # bookmark. Empty makes a new one at every start, and the log has it.
+      SETUP_CODE: "${SETUP_CODE:-}"
     ports:
       - "${SETUP_PORT:-8090}:${SETUP_PORT:-8090}"
     volumes:

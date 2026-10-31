@@ -1,0 +1,9 @@
+# The container's scripts run under sh, which a CRLF would break at the first line: ask git to keep
+# these as they are, whatever the machine that clones them does.
+* text=auto eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf

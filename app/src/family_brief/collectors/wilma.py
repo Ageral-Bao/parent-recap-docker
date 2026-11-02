@@ -228,8 +228,12 @@ def _collect_list(state: State, source_tag: str,
                    cutoff: datetime | None = None,
                    wilmas: _Wilmas | None = None) -> list[Message]:
     """Pull a list (messages|news) per student and fetch bodies. Each item's id carries its Wilma's
-    tag when that is known. An id seen without one, as before 2.0, when the CLI read only the first
-    Wilma, still counts as seen for that Wilma's items."""
+    tag when that is known.
+
+    Every item inside `cutoff` is summarized, whether or not an earlier Brief already carried it:
+    a message the parents have read in Wilma, or one last night's Brief mentioned, is still part of
+    the day it belongs to. `cutoff` therefore starts where the last delivered run left off, so an
+    item appears in one Brief, not in every one that follows."""
     payload = _run_or_log(list_cmd)
     if payload is None:
         return []
@@ -250,9 +254,6 @@ def _collect_list(state: State, source_tag: str,
                 continue
             before = f"{source_tag}:{wilma_id}"
             dedup_key = f"{source_tag}:{scope}:{wilma_id}" if scope else before
-            if state.has_seen_message("wilma", dedup_key) or (
-                    address == wilmas.first and state.has_seen_message("wilma", before)):
-                continue
 
             subject = _first(it, "subject", "title", "headline", default="") or ""
             ts = _parse_ts(_first(it, "sentAt", "publishedAt", "published", "date", "timestamp", "createdAt"))
@@ -423,6 +424,12 @@ def link(m: Message) -> str | None:
 def collect(cfg: Config, state: State, kid_terms: list[str]) -> Collected:
     from datetime import timedelta
     cutoff = datetime.now(timezone.utc) - timedelta(hours=cfg.wilma.lookback_hours)
+    # Where the last run that carried Wilma in full left off: a message that run already gave is
+    # still tonight's if it arrived after it, and one the parents have read in Wilma is no
+    # different from one they haven't. Never further back than the configured lookback.
+    caught_up = state.caught_up_at("wilma")
+    if caught_up and caught_up > cutoff:
+        cutoff = caught_up
     wilmas = _Wilmas({k.name.casefold() for k in cfg.kids})
     msgs = _collect_list(
         state, "message",
@@ -435,9 +442,11 @@ def collect(cfg: Config, state: State, kid_terms: list[str]) -> Collected:
         state, "news",
         list_cmd=["news", "list", "--all-students", "--limit", "20"],
         read_cmd_prefix=["news", "read"],
-        # News only has a publication date (midnight), so allow an extra day or an item
-        # posted after last night's run would already look too old tonight.
-        cutoff=cutoff - timedelta(days=1),
+        # News carries only a publication date, at midnight, so on a first run it needs a day of
+        # slack or an item posted after the last run would already look too old. On a run that
+        # follows a delivered one the window already starts at that run, and the slack would only
+        # bring the same item back a second night.
+        cutoff=cutoff if caught_up else cutoff - timedelta(days=1),
         wilmas=wilmas,
     )
     schedule = _collect_schedule(state, wilmas)

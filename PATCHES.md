@@ -249,3 +249,64 @@ compose 加 `stop_grace_period: 30s`，让停止有时间把连接关干净。
 
 `finish.leave.linux`（三语言）：「服务器请保持开机联网：到点它会自己运行，不需要有人登录。」
 （原文案是「晚上请让 Mac 睡眠或锁屏，不要关机」）
+
+## F. 用了一晚之后的三处反馈（2026-11-02）
+
+三处都改了实际行为，不是文案。
+
+### F1. Wilma：当天的消息全量汇总，不再按「发过/已读」跳过
+
+原来 `_collect_list` 用 `state.has_seen_message()` 过滤，一条消息只要进过任何一版简报，
+之后永远不再出现；Wilma 里被家长读过的也一样被跳过——两者在程序里是同一个东西。
+
+改成：**窗口内全量**。`cutoff` 从 `now - lookback_hours` 改为
+`max(now - lookback_hours, state.caught_up_at("wilma"))`，即「上一次把 Wilma 读干净并送达」之后的所有消息，
+不论已读与否、不论是否被上一版提过。
+
+- 用 `caught_up_at` 而不是 `last_run_at`：它只在**该来源读完且送达**时前进，跑失败不会推进窗口，不会漏
+- 仍然每天只出现一次（窗口从上次送达处开始，天然衔接，不重复）
+- 保留 `mark_message_seen` 的写入（`forget_new_seen_messages` 的失败回滚仍依赖它），只是不再拿它做门禁
+- **news 的「多给一天」要跟着收**：news 只有发布日期（当天 00:00），原来无条件 `cutoff - 1 day`，
+  在 seen 已经不挡重复的情况下会让同一条新闻连发两晚。改成只在**没有 caught_up（首次运行）**时多给一天
+
+### F2. MyClub：只取明天，并把地点与内容带进简报
+
+`collectors/myclub.py` 原本 `LOOKAHEAD_DAYS = 14`，把两周内所有日程都塞进来。11-01 那份简报里
+出现「11-15 周日 10:00」就是这么来的——它不是明天，却占了简报唯一的版面。
+
+- 窗口改成**明天的 00:00–24:00**（按 `cfg.timezone`，不是 UTC），`LOOKAHEAD_DAYS` 删除
+- 每天晚上只报明天，所以每个事件只会在它前一天的简报里出现一次，不会重复进 .ics
+- `run.py::_as_created` 增加 `location` / `description`；`render.py` 的 HTML 与纯文本两条渲染路径
+  都在事件下面多一行「地点 · 内容」（都没有时不输出空标签）
+
+### F3. 「明天的课表」不再被整段吞掉（周日简报只剩日历事件的根因）
+
+11-01 那份简报正文完全是空的：入参只有 1 条合成课表（11-02 周一的 13 节课，正文完整）+
+1 个 MyClub 事件，`summary.message_digest` 是 `""`。
+
+根因在 prompt：第 4 条只说「课表不是日历事件」，没说它该去哪；再加上「没有新闻就给空 Digest」，
+模型就两头都不写——而课表恰恰是「明天要准备什么」的主体。
+
+`summarize.py` 第 4 条补上：课表不进 `calendar_events`，但**必须进 Digest**，每个孩子一行，
+说清那天几点开始/结束、以及要家长留意的事（不在本校的课、要带的东西、提早或延后放学），
+且不要逐节课罗列。
+
+**验证（全新镜像，`run --dry-run`）**：
+
+```
+MyClub: 1 events for Kid B tomorrow (2026-11-03)
+wilma messages list: 60 items total, 1 new
+wilma news list:     50 items total, 2 new
+DRY-RUN: calendar mode=ics, 4 candidate events
+
+### Andy
+- 11月3日 周二学校日程：8:30开始，12:20结束。
+### Eric
+- 11月3日 周二学校日程：9:15开始，12:20结束。
+...
+• ⚽ Pojat 2019: Honka P2019 treenit — 11月3日 周二 18:30 (Eric)
+   <venue, address> · https://club.example.fi/...
+```
+
+候选事件从 12 个（含 11-15、12 月一堆）降到 4 个，正文从 0 字到 602 字且带明天的时间。
+`doctor` 12/12。

@@ -336,8 +336,10 @@ def _ahead(ev: CalendarEvent, now: datetime, tz: str) -> bool:
 
 
 def _as_created(events: list) -> list[dict]:
-    """Events the Brief lists without a Google write, shaped like `create_events` results."""
-    return [{"title": e.title, "start": e.start_iso(), "kid": e.kid} for e in events]
+    """Events the Brief lists without a Google write, shaped like `create_events` results, with the
+    place and the note the feed gave: what a parent needs to act on tomorrow's event."""
+    return [{"title": e.title, "start": e.start_iso(), "kid": e.kid,
+             "location": e.location or "", "description": e.description or ""} for e in events]
 
 
 @dataclass

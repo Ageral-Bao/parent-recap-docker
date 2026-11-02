@@ -313,7 +313,11 @@ def _daily_brief_html(brief: Brief, calendar_created: list[dict],
             kid = _h.escape(str(ev.get("kid") or ""))
             link = ev.get("htmlLink") or ""
             head = f'<a href="{_h.escape(link)}">{title}</a>' if link else title
-            parts.append(f"<li>{head} — {start} {('('+kid+')') if kid else ''}</li>")
+            detail = " · ".join(_h.escape(str(ev.get(k) or "").strip())
+                                for k in ("location", "description") if str(ev.get(k) or "").strip())
+            parts.append(f"<li>{head} — {start} {('('+kid+')') if kid else ''}"
+                         + (f"<br><small style='color:#666'>{detail}</small>" if detail else "")
+                         + "</li>")
         parts.append("</ul>")
     if note:
         parts.append(f"<p style='color:#a33'>{_h.escape(note)}</p>")
@@ -351,6 +355,10 @@ def _format_imessage_body(brief: Brief, calendar_created: list[dict], date_str: 
         for ev in calendar_created[:10]:
             tag = f" ({ev['kid']})" if ev.get("kid") else ""
             parts.append(f"• {ev['title']} — {_start(ev['start'], t, tz)}{tag}")
+            detail = " · ".join(str(ev.get(k) or "").strip()
+                                for k in ("location", "description") if str(ev.get(k) or "").strip())
+            if detail:
+                parts.append(f"   {detail}")
     return "\n".join(parts)
 
 

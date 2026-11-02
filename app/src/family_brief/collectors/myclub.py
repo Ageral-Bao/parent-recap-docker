@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
 import requests
 import yaml
@@ -16,8 +17,6 @@ from ..state import State
 from .base import CalendarEvent, Collected, retry_once_on_timeout
 
 log = logging.getLogger(__name__)
-
-LOOKAHEAD_DAYS = 14
 
 def _normalize_url(url: str) -> str:
     if url.startswith("webcal://"):
@@ -88,11 +87,14 @@ def _as_utc(dt) -> datetime:
 
 
 def collect(cfg: Config, state: State, kid_terms: list[str]) -> Collected:
-    """The upcoming events of each kid's MyClub iCal feed, to add to the calendar; MyClub has no
-    Messages. The feed gives every event again each night, so none is marked seen."""
+    """Tomorrow's events of each kid's MyClub iCal feed, to add to the calendar; MyClub has no
+    Messages. Only the next day is read: the evening Brief says what to prepare for tomorrow, so a
+    match three weeks out is no use there, and each night brings its own day. The feed gives every
+    event again each night, so none is marked seen."""
     events: list[CalendarEvent] = []
-    now = datetime.now(timezone.utc)
-    horizon = now + timedelta(days=LOOKAHEAD_DAYS)
+    zone = ZoneInfo(cfg.timezone)
+    day_start = datetime.combine(datetime.now(zone).date() + timedelta(days=1), time.min, tzinfo=zone)
+    day_end = day_start + timedelta(days=1)
 
     for kid in cfg.kids:
         if not kid.myclub_ical_url:
@@ -121,7 +123,7 @@ def collect(cfg: Config, state: State, kid_terms: list[str]) -> Collected:
             start = _as_utc(dtstart.dt)
             end = _as_utc(dtend.dt) if dtend else None
 
-            if start < now - timedelta(hours=6) or start > horizon:
+            if not (day_start <= start.astimezone(zone) < day_end):
                 continue
 
             title_lc = summary.lower()
@@ -145,6 +147,6 @@ def collect(cfg: Config, state: State, kid_terms: list[str]) -> Collected:
             ))
             kid_events += 1
 
-        log.info("MyClub: %d upcoming events for %s (next %dd)", kid_events, kid.name, LOOKAHEAD_DAYS)
+        log.info("MyClub: %d events for %s tomorrow (%s)", kid_events, kid.name, day_start.date())
 
     return Collected(events=events)

@@ -451,6 +451,63 @@ def _collect_exams() -> list[Message]:
     )]
 
 
+# A teacher may log a lesson's note the day after the lesson, so the window reaches back a day;
+# each note is marked seen, so one is summarized once.
+NOTE_LOOKBACK_DAYS = 2
+
+
+def _collect_notes(state: State) -> list[Message]:
+    """The lesson notes (merkinnät) teachers logged: absences, lateness, missing books or homework,
+    praise, and their own words in `note`. Wilma leaves `note` empty when the teacher wrote the
+    detail on Wilma's own page, which the Brief then says rather than inventing one."""
+    payload = _run_or_log(["notes", "--days", str(NOTE_LOOKBACK_DAYS)])
+    if not isinstance(payload, dict):
+        return []
+
+    out: list[Message] = []
+    for block in payload.get("students") or []:
+        if not isinstance(block, dict):
+            continue
+        student = block.get("student") if isinstance(block.get("student"), dict) else {}
+        for note in block.get("notes") or []:
+            if not isinstance(note, dict):
+                continue
+            day = _first(note, "date", default="") or ""
+            start = _first(note, "start", default="") or ""
+            course = _first(note, "subject", default="") or ""
+            label = _first(note, "typeLabel", default="") or ""
+            teacher = _first(note, "teacher", default="") or ""
+            text = _first(note, "note", default="") or ""
+
+            fingerprint = hashlib.sha1(
+                f"{day}|{start}|{course}|{label}|{text[:60]}".encode("utf-8")).hexdigest()[:16]
+            external_id = f"note:{fingerprint}"
+            if state.has_seen_message("wilma", external_id):
+                continue
+
+            try:
+                when = datetime.fromisoformat(f"{day}T{start or '00:00'}").astimezone()
+            except ValueError:
+                when = datetime.now(timezone.utc)
+
+            out.append(Message(
+                source="wilma",
+                external_id=external_id,
+                timestamp=when,
+                sender=teacher or None,
+                subject=" · ".join(part for part in (course, label) if part),
+                body=text[:MAX_BODY_CHARS],
+                chat_name="notes",
+                kid_hint=student.get("name"),
+                metadata={"wilma_kind": "note", "raw_date": day,
+                          "course": course, "note_teacher": teacher},
+            ))
+            state.mark_message_seen("wilma", external_id)
+
+    log.info("wilma notes: %d new in the last %d days", len(out), NOTE_LOOKBACK_DAYS)
+    return out
+
+
 # How many people a Wilma message must be addressed to, by the names Wilma lists, to count as sent
 # to everyone (ADR 0013). A message about one child goes to its guardians (usually two, rarely
 # four), its teachers and the school's student welfare staff (principal, school social worker,
@@ -520,4 +577,4 @@ def collect(cfg: Config, state: State, kid_terms: list[str]) -> Collected:
         wilmas=wilmas,
     )
     schedule = _collect_schedule(state, wilmas)
-    return Collected(messages=[*msgs, *news, *schedule, *_collect_exams()])
+    return Collected(messages=[*msgs, *news, *schedule, *_collect_exams(), *_collect_notes(state)])

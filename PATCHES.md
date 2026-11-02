@@ -350,3 +350,44 @@ Wilma 本身就把考试存成结构化数据，不需要从消息里猜：`wilm
 
 **已知瑕疵**：同一条在今天那场被省略范围（单场时反而完整），prompt 已写「不许省略范围」，
 先观察几晚；若复现，考虑把考试从模型转述改成独立段落直接渲染（代价：中文简报里会夹芬兰语原文）。
+
+## H. 每天发生的课堂记录（2026-11-02 夜）
+
+对应 Wilma 的 `attendance/view` 页面：老师记的 merkinnät——缺勤、迟到、没带书/没做作业、表扬，
+每条挂在某一节课上，可能带老师原话。`wilma notes --json` 直接给结构：
+`{date | from+to, students:[{student, notes:[{date, start, end, subject, typeLabel, teacher, note}]}]}`
+（默认就是「今天」，`--days N` 取区间）。
+
+### H1. `collectors/wilma.py::_collect_notes` —— 每条记录一条 Message
+
+- 窗口 `NOTE_LOOKBACK_DAYS = 2`：老师常在**第二天**才补记前一天的课，只看今天会漏
+- 去重按指纹 `sha1(date|start|course|typeLabel|note[:60])`，进 `state`，所以补记能进、重复不会
+- `Message.subject` = `课程代码 · 类型标签`（如 `YM07 · Opettajan kommentti (…), Kotitehtävät tekemättä`）
+- `body` = 老师原话；**Wilma 没给原文时留空**，不编造
+- `kid_hint` = 学生名，`sender` = 老师，`timestamp` = 那节课的日期+开始时间
+
+### H2. `summarize.py` —— 一条规则
+
+「课堂记录写进该孩子的 Digest：日期与课程、是哪一类、老师要点的转述；**没有原文时说记录在 Wilma 的出勤页**，
+不要猜原因；如果这条记录要求家长做事（交作业、带书、回复），同时生成待办。」
+
+**验证**（容器内把窗口临时放到 20 天跑，未改镜像；本周暂无记录，故用历史数据）：
+
+```
+采集到 3 条（Andy）：
+10-29 10:00 | YM07  | body: ''                      ← 老师只写了「去 Wilma 看」
+10-28 10:00 | SU207 | body: ''
+10-22 14:00 | SU207 | body: 'the pupil had no notebook and no pen…'
+
+模型输出：
+- 10月29日的环境与自然课（YM07）：缺少作业；老师的评论可在 Wilma 查看。
+- 10月28日的芬兰语课（SU207）：缺少作业；老师的评论可在 Wilma 查看。
+- 10月22日的芬兰语课（SU207）：老师说，Andy 没带笔记本和笔；尽管老师提醒用纸代替缺少的笔记本，
+  课堂上仍有很多时间花在坐着不动。
+```
+
+日期、课程、类型、原文转述都对；空原文没有编造。
+
+**顺带核实**：归档 `2026-11-02.md` 里内容看起来出现两遍（摘要 + 注意事项），
+查证是**归档 md 的设计**（digest / notices / 待办分段全记），邮件正文只有 digest——
+`render._shown_digest()` 仅在 digest 为空时才用 notices 顶上。邮件不重复。

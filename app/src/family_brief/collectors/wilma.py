@@ -381,6 +381,76 @@ def _collect_schedule(state: State, wilmas: _Wilmas | None = None) -> list[Messa
     )]
 
 
+# Exams are worth looking at a week ahead: the point of them is revision time, and Wilma gives the
+# topic to revise. One run's list stays inside this window.
+EXAM_WINDOW_DAYS = 7
+
+
+def _collect_exams() -> list[Message]:
+    """The exams of the next EXAM_WINDOW_DAYS as a synthetic Message per run: date, subject, what
+    the exam is called and the range to revise, plus the teacher and the start time where Wilma
+    gives one. The date counts, not the run: an exam stays in the list until its day has passed."""
+    from datetime import date as _date, timedelta as _td
+
+    payload = _run_or_log(["exams", "--limit", "50"])
+    if not isinstance(payload, dict):
+        return []
+
+    today = datetime.now().astimezone().date()
+    last = today + _td(days=EXAM_WINDOW_DAYS - 1)
+    lines: list[str] = []
+    for block in payload.get("students") or []:
+        if not isinstance(block, dict):
+            continue
+        student = block.get("student") if isinstance(block.get("student"), dict) else {}
+        upcoming: list[tuple[_date, dict]] = []
+        for exam in block.get("exams") or []:
+            if not isinstance(exam, dict):
+                continue
+            try:
+                day = _date.fromisoformat(str(exam.get("date")))
+            except ValueError:
+                continue
+            if today <= day <= last:
+                upcoming.append((day, exam))
+        if not upcoming:
+            continue
+        lines.append(f"— {student.get('name', '?')} —")
+        for day, exam in sorted(upcoming, key=lambda pair: pair[0]):
+            ahead = (day - today).days
+            rel = {0: "today", 1: "tomorrow"}.get(ahead, f"in {ahead} days")
+            at = _first(exam, "time", default="") or ""
+            line = (f"  [{day.isoformat()} {_WEEKDAYS[day.weekday()]} · {rel}"
+                    f"{', ' + str(at) if at else ''}]  "
+                    f"{_first(exam, 'subject', default='') or '?'}")
+            name = _first(exam, "name", default="") or ""
+            if name:
+                line += f" · {name}"
+            topic = _first(exam, "topic", default="") or ""
+            if topic:
+                line += f"  |  to revise: {topic}"
+            teacher = _first(exam, "teacher", default="") or ""
+            if teacher:
+                line += f"  |  teacher: {teacher}"
+            lines.append(line)
+        lines.append("")
+
+    if not lines:
+        log.info("wilma exams: none in the next %d days", EXAM_WINDOW_DAYS)
+        return []
+    log.info("wilma exams: %d exam lines in the next %d days",
+             sum(1 for line in lines if line.startswith("  [")), EXAM_WINDOW_DAYS)
+    return [Message(
+        source="wilma",
+        external_id=f"exams:{today.isoformat()}",
+        timestamp=datetime.now(timezone.utc),
+        subject=f"Exams in the next {EXAM_WINDOW_DAYS} days (from {today.isoformat()})",
+        body="\n".join(lines)[:MAX_BODY_CHARS],
+        chat_name="exams",
+        metadata={"wilma_kind": "exams_next_week", "first_date": today.isoformat()},
+    )]
+
+
 # How many people a Wilma message must be addressed to, by the names Wilma lists, to count as sent
 # to everyone (ADR 0013). A message about one child goes to its guardians (usually two, rarely
 # four), its teachers and the school's student welfare staff (principal, school social worker,
@@ -450,4 +520,4 @@ def collect(cfg: Config, state: State, kid_terms: list[str]) -> Collected:
         wilmas=wilmas,
     )
     schedule = _collect_schedule(state, wilmas)
-    return Collected(messages=[*msgs, *news, *schedule])
+    return Collected(messages=[*msgs, *news, *schedule, *_collect_exams()])

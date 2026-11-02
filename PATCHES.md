@@ -310,3 +310,43 @@ DRY-RUN: calendar mode=ics, 4 candidate events
 
 候选事件从 12 个（含 11-15、12 月一堆）降到 4 个，正文从 0 字到 602 字且带明天的时间。
 `doctor` 12/12。
+
+## G. 未来一周的考试（2026-11-02 晚）
+
+Wilma 本身就把考试存成结构化数据，不需要从消息里猜：`wilma exams --json` 给
+`{students:[{student, exams:[{date, time, subject, name, topic, teacher}]}]}`，
+其中 `topic` 就是「要复习的范围」（章节、页码）。所以整件事不靠模型抽取，只靠模型转述。
+
+### G1. `collectors/wilma.py::_collect_exams` —— 新增一条合成消息
+
+- 窗口 `EXAM_WINDOW_DAYS = 7`：**今天起 7 天**（含今天），按日期排序
+- 每个孩子一段，每场考试一行：`[YYYY-MM-DD 周三 · today/tomorrow/in N days]  科目 · 名称  |  to revise: 范围  |  teacher: 老师`
+- Wilma 没给 `topic` 的就不写范围（例如 11-26 的 Elämänkatsomustieto），不编造
+- `time` 多为 `null`，有则拼在日期后面
+- 每晚都生成一条（`external_id = exams:<今天>`），所以「本周考试」是**每天可见的提醒**，不是一次性新闻
+- 走现有链路：`source=wilma`、`wilma_kind=exams_next_week`，进模型输入、进 Digest、自动翻译成简报语言
+
+### G2. `summarize.py` —— 一条硬规则
+
+「每条考试单独一行，日期 + 科目 + 名称 + 范围，章节页码照抄，不许合并、不许省略范围」。
+
+**验证**（容器内直接跑，不改镜像）：
+
+```
+周一实际数据 7 场（把窗口临时放到 45 天看排版）：
+  [2026-11-02 Mon · today]  Englanti, A1 · sanakoe kpl 4 | to revise: Textbook s. 32 ... | teacher: the teacher
+  [2026-11-12 Thu · in 10 days] Matematiikka · Mittaaminen | to revise: Kpl 29-37 | ...
+  ...（共 7 行，字段齐）
+
+模型输出同样是 7 行：
+- 11月2日 周一有英语词汇小测，第4课。                     ← 唯一瑕疵：这条的范围被省了
+- 11月12日 周四有数学考试《测量》，复习第29–37课。
+- 12月3日 周四有环境学考试《地球与太空》，复习第12–16课、第42–43页和第52–53页。
+  ...（其余均带范围与页码）
+```
+
+当天真实 dry-run（窗口就是 7 天）也确认了考试进了 Digest：
+「11月2日周一有英语 A1 词汇测验，第4课；复习课本第32页的时间表达，以及练习册第48页至橙色横线处的单词。」
+
+**已知瑕疵**：同一条在今天那场被省略范围（单场时反而完整），prompt 已写「不许省略范围」，
+先观察几晚；若复现，考虑把考试从模型转述改成独立段落直接渲染（代价：中文简报里会夹芬兰语原文）。

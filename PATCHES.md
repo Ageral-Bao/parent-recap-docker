@@ -663,3 +663,15 @@ homework, teacher}]}]}`，`date` 是**布置作业的那节课**，不是截止�
 
 **已知瑕疵**：模型偶发把 terveydenhoitaja（校护士）与 koululääkäri（校医）混称
 （「校医说已咨询校医」）；信息本身没错，暂不改，若复现再在术语表里加词。
+
+### L5. `summarize.py` — 校方人员的称谓（补）
+
+验证时模型两轮都写成「校医说已咨询校医」：原文 `konsultoin koululääkäriä` 是
+「我（校护士）咨询了学校医生」，而签名 `Yt. Th <nurse>`（Th = terveydenhoitaja）模型没读懂，
+把发信人当成了医生。
+
+Notes 加一条术语规则，把 terveydenhoitaja（校护士）/ koululääkäri（校医）/ kuraattori（校社工）/
+psykologi（校心理师）/ opettaja（老师）/ rehtori（校长）明确分开，并说明名字后的
+`TH`、`M.S` 是那人的职务、不是第二个头衔。
+
+改后：`校护士 the school nurse 说已咨询校医，并通过 Lunna 发送医生答复；家长回复说没找到…`

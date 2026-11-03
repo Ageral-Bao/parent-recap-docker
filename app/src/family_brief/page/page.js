@@ -5,7 +5,7 @@ const PHASES = ["welcome", "connect", "working", "check", "first-brief", "finish
 const page = {
   text: null, language: "en", chosen: null, languages: [], system: "macos", ais: [], installs: [],
   about: null,
-  progress: null, welcome: null, connect: null, gmail: null, myclub: null,
+  progress: null, welcome: null, connect: null, gmail: null, myclub: null, wilma: null,
   check: null, brief: null, welcomeShown: false, connectShown: false, workingShown: false,
   checkShown: false, briefShown: false, finishShown: false, finished: false,
 };
@@ -486,6 +486,8 @@ function renderConnect() {
   document.getElementById("source-copy").addEventListener("click", () => {
     navigator.clipboard.writeText(document.getElementById("source-install-line").textContent);
   });
+  // Opened from Finish to change one account: that one step, then back where the family was.
+  document.getElementById("connect-editing-back").addEventListener("click", goBack("api/edit/done"));
   for (const step of connectSteps()) step.setUp?.();
   document.getElementById("connect-continue").addEventListener("click", startReading);
 }
@@ -676,10 +678,22 @@ function renderSources() {
   showSkips(step, statuses[current]);
   document.getElementById("connect-done").hidden = Boolean(current);
   renderHandoff(moved);
+  renderEditing();
   if (!step) return;
   if (connectStep.shown.has(current)) return step.again?.();
   connectStep.shown.add(current);
   step.first?.();
+}
+
+// A Source opened from Finish to change it on its own says so above its step, with the way back
+// to Finish beside it. The list stays: another account is one click away, in any order.
+function renderEditing() {
+  const editing = Boolean(page.progress.editing) && page.progress.phase === "connect";
+  document.getElementById("connect-editing").hidden = !editing;
+  if (!editing) return;
+  const name = currentSource();
+  setText(document.getElementById("connect-editing-message"), "connect.editing",
+    { source: name ? t("source." + name) : "" });
 }
 
 // Once a Source is connected, says so and which Source is next, and scrolls to it in the list,
@@ -687,8 +701,8 @@ function renderSources() {
 function renderHandoff(moved) {
   const note = document.getElementById("source-handoff");
   const handoff = connectStep.handoff;
-  note.hidden = !handoff;
-  if (!handoff) return;
+  note.hidden = !handoff || Boolean(page.progress.editing);
+  if (!handoff || page.progress.editing) return;
   const done = t("source." + handoff.done);
   note.textContent = handoff.next
     ? fill(t("connect.handoff"), { done, next: t("source." + handoff.next) })
@@ -936,7 +950,21 @@ function renderWilma() {
 
 // Wilma's step, each time it's drawn: the CLI made ready, unless it is or is being made so.
 function prepareWilma() {
+  prefillWilma();
   if (!wilmaStep.ready && !wilmaStep.preparing) getWilmaReady();
+}
+
+// Opened again from Finish to change the password: the Wilma signed in to before is already the
+// one picked, and the username is filled in, so only the password is typed. Never the password
+// itself, which is the thing being changed.
+function prefillWilma() {
+  const remembered = page.wilma;
+  if (!remembered || !page.progress.editing || wilmaStep.found.length) return;
+  const username = document.getElementById("wilma-username");
+  if (!username.value) username.value = remembered.username;
+  wilmaStep.found = [remembered.tenant];
+  wilmaStep.searched = true;
+  renderTowns();
 }
 
 // Gets the pinned wilma CLI ready, installing it if it isn't: the town list comes with it. While
@@ -1362,6 +1390,11 @@ function firstWhatsApp() {
   if (!done) return pairWhatsApp();
   document.getElementById("whatsapp-steps").hidden = true;
   document.getElementById("whatsapp-on").hidden = false;
+  // Opened from Finish to change the account: a phone that no longer lists the device pairs
+  // again from here, without the whole setup being walked through.
+  const again = document.getElementById("whatsapp-again");
+  again.hidden = !page.progress.editing;
+  if (page.progress.editing) setText(again, "whatsapp.repair");
   showSource("whatsapp.paired");
 }
 
@@ -2474,7 +2507,78 @@ function enterFinish() {
   showList(document.getElementById("finish-whatsapp-groups"), picked);
   showBackToConnect("finish-back");
   showHouseholdAI();
+  renderAccounts();
   checkFinish();
+}
+
+// ── Finish: the accounts the Brief reads, each changed on its own and at any time. A password
+// that changed, a calendar link that moved, a phone with WhatsApp installed again: setup isn't
+// walked through from the start for one of them, and the order the Sources were set up in doesn't
+// matter here.
+
+function renderAccounts() {
+  const list = document.getElementById("finish-accounts");
+  list.replaceChildren(...page.connect.sources.map(({ name }) => accountRow(name)));
+}
+
+function accountRow(name) {
+  const item = document.createElement("li");
+  const label = document.createElement("span");
+  label.className = "name";
+  label.textContent = t("source." + name);
+  const state = document.createElement("span");
+  state.className = "state";
+  state.textContent = accountState(name);
+  const change = document.createElement("button");
+  change.type = "button";
+  change.className = "secondary";
+  setText(change, "account.change");
+  change.dataset.label = "account.change.aria"; // a lone "Change" says nothing out of the row
+  change.dataset.values = JSON.stringify({ account: label.textContent });
+  change.setAttribute("aria-label",
+    fill(t("account.change.aria"), { account: label.textContent }));
+  change.addEventListener("click", () => changeAccount(name));
+  item.append(label, state, change);
+  return item;
+}
+
+// What the Brief reads it from, as it is now, or that it's off.
+function accountState(name) {
+  const status = page.progress.sources[name];
+  if (status !== "done") return t("status." + status);
+  if (name === "gmail") {
+    return fill(t("account.state.gmail"),
+      { address: page.gmail.address || "", count: page.gmail.to.length });
+  }
+  if (name === "ai") return t("account.state.ai." + page.welcome.ai);
+  if (name === "whatsapp") {
+    const groups = page.whatsapp.picked;
+    return groups.length ? fill(t("account.state.whatsapp"), { count: groups.length })
+      : t("account.state.whatsapp.none");
+  }
+  if (name === "myclub") {
+    const kids = page.myclub.kids || [];
+    return fill(t("account.state.myclub"),
+      { linked: kids.filter((k) => k.linked).length, count: kids.length });
+  }
+  return t("account.state.wilma");
+}
+
+// The AI has its editor on this page already, so its row opens that one; the others are their
+// step in Connect, which the server opens on its own.
+function changeAccount(name) {
+  if (name === "ai") return openFinishAI();
+  return openAccount(name);
+}
+
+async function openAccount(name) {
+  clearError();
+  try {
+    await post("api/edit", { source: name });
+    window.location.reload(); // the step is set up afresh, as Connect sets it up
+  } catch (e) {
+    failed(e);
+  }
 }
 
 // ── Finish: turning WhatsApp off. The server removes the job, the pairing and the messages
@@ -2534,6 +2638,10 @@ function openFinishAI() {
   document.getElementById("finish-ai-open").hidden = true;
   document.getElementById("finish-ai-saved").hidden = true;
   document.getElementById("finish-ai-form").hidden = false;
+  document.getElementById("finish-ai").scrollIntoView({
+    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+    block: "start",
+  });
 }
 
 // Shows the sign-in of the AI picked, which Codex's starts by itself, as in Connect.
@@ -2838,6 +2946,7 @@ async function start() {
   page.connect = state.connect;
   page.gmail = state.gmail;
   page.myclub = state.myclub;
+  page.wilma = state.wilma;
   page.whatsapp = state.whatsapp;
   page.check = state.check;
   page.brief = state.brief;

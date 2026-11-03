@@ -87,6 +87,10 @@
   <section id="connect" hidden>
     <h1 data-text="connect.title"></h1>
     <p class="note" data-text="connect.intro"></p>
+    <div id="connect-editing" class="status" role="status" hidden>
+      <p id="connect-editing-message"></p>
+      <p><button type="button" id="connect-editing-back" class="secondary" data-text="connect.editing.back"></button></p>
+    </div>
     <ol id="sources" class="sources"></ol>
     <p id="source-handoff" class="handoff" role="status" hidden></p>
     <div id="connect-slot" class="slot"></div>
@@ -461,7 +465,9 @@
       <p id="finish-changes"></p>
     </details>
     <div id="finish-later">
-      <h2 data-text="finish.later"></h2>
+      <h2 data-text="finish.accounts"></h2>
+      <p class="hint" data-text="finish.accounts.note"></p>
+      <ul id="finish-accounts" class="accounts"></ul>
       <div id="finish-ai">
         <h3 data-text="finish.ai.title"></h3>
         <p id="finish-ai-current"></p>

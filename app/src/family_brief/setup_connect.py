@@ -107,23 +107,26 @@ class ConnectSteps:
                  reply: dict[str, Any] | None = None) -> Reply:
         """Saves the Source `name` as done with `answers`, and moves setup on to the next Source
         unless `move_on` says otherwise. With `keep_skipped`, a Source skipped meanwhile stays
-        skipped and nothing is saved: the family's choice stands. `reply` is added to the answer."""
+        skipped and nothing is saved: the family's choice stands. `reply` is added to the answer.
+        A Source opened again to be changed stays where it is, rather than moving on."""
         with self.lock:
             progress = self.progress()
             if keep_skipped and progress["sources"][name] == "skipped":
                 return HTTPStatus.OK, {"progress": progress, **(reply or {})}
             on = move_on(progress) if callable(move_on) else move_on
             statuses = {**progress["sources"], name: "done"}
+            editing = bool(progress.get("editing"))
             return self._step(progress, answers, {name: "done"},
-                              {"source": next_source(statuses)} if on else {}, reply)
+                              {"source": name if editing else next_source(statuses)}
+                              if on or editing else {}, reply)
 
     def move_on(self, name: str, refusal: dict[str, Any]) -> Reply:
         """Moves setup on from the Source `name` once it's done, or refuses with `refusal`."""
         with self.lock:
-            statuses = self.progress()["sources"]
-            if statuses[name] != "done":
+            progress = self.progress()
+            if progress["sources"][name] != "done":
                 return HTTPStatus.BAD_REQUEST, refusal
-            return self.save({"progress": {"source": next_source(statuses)}})
+            return self.save({"progress": {"source": self._next(progress, name)}})
 
     def skip(self, name: str, answers: dict[str, Any] | None = None) -> Reply:
         """Saves the Source `name` as skipped with `answers`, and moves setup on to the next one."""
@@ -131,7 +134,7 @@ class ConnectSteps:
             progress = self.progress()
             statuses = {**progress["sources"], name: "skipped"}
             return self._step(progress, {**SKIP_ANSWERS.get(name, {}), **(answers or {})},
-                              {name: "skipped"}, {"source": next_source(statuses)})
+                              {name: "skipped"}, {"source": self._next(progress, name)})
 
     def open(self, name: str) -> Reply:
         """Opens the Source `name` from the list, which brings a skipped one back."""
@@ -139,6 +142,33 @@ class ConnectSteps:
             progress = self.progress()
             status = "to-do" if progress["sources"][name] == "skipped" else progress["sources"][name]
             return self._step(progress, None, {name: status}, {"source": name})
+
+    def edit(self, name: str) -> Reply:
+        """Opens one Source from Finish to change it on its own: a password that changed, a
+        calendar link that moved, a phone's WhatsApp. Its step is shown on its own, without going
+        through the ones before it, and stays there once it's saved."""
+        with self.lock:
+            progress = self.progress()
+            if progress["phase"] != "finish":
+                return HTTPStatus.BAD_REQUEST, setup_save.outcome(
+                    "invalid-answers", "An account is changed once setup is at Finish.",
+                    errors=["answers: should be {}, at Finish"])
+            return self.save({"progress": {"phase": "connect", "source": name, "editing": True}})
+
+    def edit_done(self) -> Reply:
+        """Goes back to Finish from a Source opened to be changed, whether it was saved or not."""
+        with self.lock:
+            progress = self.progress()
+            if progress["phase"] != "connect" or not progress.get("editing"):
+                return HTTPStatus.BAD_REQUEST, setup_save.outcome(
+                    "invalid-answers", "There's no account being changed.",
+                    errors=["answers: should be {}, with a Source opened from Finish"])
+            return self.save({"progress": {"phase": "finish", "source": None, "editing": False}})
+
+    def _next(self, progress: Progress, name: str) -> str | None:
+        """Where setup goes once the Source `name` is saved: the next one to do, or, for a Source
+        opened again to be changed, itself, which the page stays on until the family goes back."""
+        return name if progress.get("editing") else next_source(progress["sources"])
 
     def reopen(self, allowed: Callable[[Progress], bool], refusal: dict[str, Any]) -> Reply:
         """Takes setup from Check or Finish back to Connect's Source list, when `allowed` says the

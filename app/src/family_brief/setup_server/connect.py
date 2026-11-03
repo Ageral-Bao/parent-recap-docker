@@ -33,10 +33,16 @@ class SourceChoice(Strict):
     action: Literal["open", "skip"]
 
 
+class EditChoice(Strict):
+    """A Source opened from Finish to be changed on its own."""
+    source: setup_save.SourceName
+
+
 class Connect(Phase):
     def routes(self) -> dict[str, Action]:
         return {"api/source": self.choose_source, "api/open": self.open_site,
-                "api/connect/back": self.back_to_connect}
+                "api/connect/back": self.back_to_connect,
+                "api/edit": self.edit_source, "api/edit/done": self.edit_done}
 
     def state(self, progress: dict[str, Any]) -> dict[str, Any]:
         can_skip = skippable()
@@ -100,6 +106,23 @@ class Connect(Phase):
                 "invalid-answers",
                 "Only Check and Finish go back to Connect, for a Source that was skipped.",
                 errors=["answers: should be {}, at Check or Finish with a Source skipped"])))
+
+    def edit_source(self, raw: Any) -> Reply:
+        """Opens one Source from Finish to change it on its own, such as a changed password or a
+        new calendar link: its step alone, and back to Finish once the family is done with it.
+        Never while a check runs, and never while a pairing or a sign-in is under way."""
+        answer = parse(EditChoice, raw)
+        listed = setup_connect.sources()
+        if answer.source not in listed:  # a step this system doesn't offer
+            return HTTPStatus.BAD_REQUEST, setup_save.outcome(
+                "invalid-answers", "Change one of the Sources on the list.",
+                errors=[f"source: should be one of {', '.join(listed)}"])
+        return go_back(self.context, lambda: self.context.connect.edit(answer.source))
+
+    def edit_done(self, raw: Any) -> Reply:
+        """Goes back to Finish from a Source opened to be changed, leaving it as it now is."""
+        parse(Nothing, raw)
+        return go_back(self.context, self.context.connect.edit_done)
 
 
 def go_back(context: Context, step: Callable[[], Reply]) -> Reply:

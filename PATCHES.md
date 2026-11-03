@@ -492,3 +492,73 @@ follow 命令:
 `_paired()` 写进对应账号而不是覆盖 `chats`、页面跨语言文案，**并且必须由第二部手机实扫一次才算验证**。
 在那之前，第二个号只能靠命令行配对（`linked_device.command("pair", cfg, account="2")`），
 对使用者不友好，所以没有交付为「可用」。
+
+## K. 账号随时单独修改，不再锁死顺序（2026-11-03）
+
+需求：密码改了、日历链接换址、手机换了——想单独更新**某一个**账号，
+不想把设置向导从头走一遍，也不想被「必须先配 A 再配 B」的顺序绑住。
+
+上游的设置页是一条单向流水线（Welcome → Connect 逐源 → Check → Finish），
+Finish 之后唯一能回 Connect 的入口是「补配当初跳过的源」，改一个已配好的账号没有路。
+
+### K1. `setup_save.py` —— progress 加 `editing` 字段
+
+`ProgressAnswer` 增加 `editing: bool | None`；读写都兼容没有这个字段的老配置（视为 False）。
+序列化时只有显式设置过才写出，老配置升级后 diff 最小。
+
+### K2. `setup_connect.py` —— 状态机的两个新转移
+
+- `edit(name)`：**只能从 Finish 发起**（其他 phase 一律 400）。把 progress 拉回
+  `phase=connect, source=name, editing=true`——不经过 next_source 顺序，直接落在要改的那一步
+- `edit_done()`：只有 editing 中才能调用（否则 400）。回到 `phase=finish, editing=false`
+- `complete()` 尊重 editing：改完账号**停在原地**（source 不推进），由家里人自己点「返回」；
+  `_next()` 同理——编辑态下「下一个源」就是它自己
+
+### K3. `setup_server/connect.py` —— 两条路由
+
+`api/edit`（body `{source}`）和 `api/edit/done`（body `{}`）。
+复用 `go_back()` 的护栏：体检或收尾正在进行时返回 409 Conflict，且回退会作废过期的
+health/finish 结果（它们描述的是回退之前的配置）。
+
+### K4. `setup_server/wilma.py` —— 登录成功后不推进
+
+Wilma 的 `_signed_in` 在 editing 模式下完成登录**不推进 phase**（对齐 K2 的 complete 语义），
+否则改个密码会被踢到下一个没配的源去。
+
+### K5. 前端 —— Finish 页的账号清单 + Connect 页的编辑横幅
+
+- `index.html`：Connect 段加 `#connect-editing` 提示条（「正在修改 X」+ 返回按钮）；
+  Finish 段新增 `#finish-accounts` 账号清单
+- `page.js`：
+  - `renderAccounts()` / `accountRow(name)`：每个账号一行——名字、当前状态
+    （Gmail 显示发件地址与收件人数、AI 显示后端、WhatsApp 显示群数、MyClub 显示已链接孩子数）、
+    「修改」按钮（带 aria-label，盲用也能知道改的是哪个账号）
+  - `changeAccount()`：AI 复用 Finish 页已有的编辑器；其他源走 `api/edit` 后整页刷新
+    （该源的步骤按 Connect 的方式重新渲染，配对二维码、登录表单都是新的）
+  - editing 态隐藏 handoff 引导、WhatsApp 显示「重新关联」而非「去配对」
+- `page/text.json`：新增 `connect.editing`、`connect.editing.back`、`whatsapp.repair`、
+  `finish.accounts`、`finish.accounts.note`、`account.change`、`account.change.aria`、
+  `account.state.*`（fi/en/zh 三语）；删掉已无引用的 `finish.later`
+
+### 验证（容器内，生产配置的副本，不碰生产状态）
+
+把 `/root/.family` 复制到 `/tmp`，在 `127.0.0.1:8123` 起第二个设置页（`SETUP_CODE` 须 ≥16 字符，
+短码会被忽略回落随机码——第一次 403 就是这么来的），纯 HTTP 驱动：
+
+```
+1. 起始状态            phase=finish，五个源全 done，editing=false
+2. api/edit {wilma}    200 → phase=connect, source=wilma, editing=true
+3. 回读 state          同上，确认落盘
+4. 编辑中再 edit       400 "An account is changed once setup is at Finish."
+5. 未知 source         400 "should be 'wilma', 'gmail', 'ai', 'whatsapp' or 'myclub'"
+6. api/edit/done       200 → phase=finish, source=null, editing=false
+7. 回读 state          同上
+8. 无编辑时 done       400 "There's no account being changed."
+9. finish 的 state     connect.sources 五个源齐全（账号清单的渲染数据）
+```
+
+9 项全过，测试完删副本。生产 `doctor` 12/12 不变。
+
+### 顺带修正
+
+`tools/test_edit_flow.py` 沉淀为可复跑的验证脚本（容器内 python 驱动，不依赖 curl）。

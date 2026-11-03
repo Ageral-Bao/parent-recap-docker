@@ -45,6 +45,26 @@ class Wilma(Phase):
                 "api/wilma/terminal": self.open_wilma_window,
                 "api/wilma/check": self.check_wilma_window}
 
+    def state(self, progress: dict[str, Any]) -> dict[str, Any]:
+        """The Wilma signed in to before, so the step opened again to change the password already
+        has it picked and the username filled in. Never the password: it's what changes."""
+        return {"wilma": self._remembered()}
+
+    def _remembered(self) -> dict[str, Any] | None:
+        path = setup_wilma.config_path()
+        last = setup_wilma.last_profile_id(path)
+        saved = setup_wilma.profile(path, last) if last else None
+        username = saved.get("username") if isinstance(saved, dict) else None
+        url = saved.get("tenantUrl") if isinstance(saved, dict) else None
+        if not (isinstance(username, str) and username and isinstance(url, str) and url):
+            return None
+        tenant = setup_wilma.entry(setup_wilma.tenants() or [], url)
+        towns = setup_wilma.towns_of(tenant) if tenant else []
+        city = self.context.data().get("city")
+        town = city if isinstance(city, str) and city in towns else (towns[0] if towns else None)
+        return {"username": username,
+                "tenant": {"url": url, "name": tenant["name"] if tenant else url, "town": town}}
+
     def wilma_ready(self, raw: Any) -> Reply:
         """Installs the pinned wilma CLI unless it's there, since the town list comes with it. A
         failed install says why, for the page to show."""
@@ -125,11 +145,20 @@ class Wilma(Phase):
         window["result"] = done
 
     def _signed_in(self, kids: list[dict[str, Any]], city: str | None) -> Reply:
-        """Saves the Kids Wilma lists and the town, with Wilma on and done."""
+        """Saves the Kids Wilma lists and the town, with Wilma on and done. Signing in again from
+        Finish only changes the sign-in: a Kid the Household has and Wilma doesn't list any more,
+        added for their MyClub link, stays."""
+        listed: list[dict[str, Any]] = [
+            {"name": k["name"],
+             **({"school": k["school"]} if k.get("school") else {}),
+             **({"class_name": k["class"]} if k.get("class") else {})} for k in kids]
+        if self.context.progress().get("editing"):
+            known = {k["name"] for k in listed}
+            listed += [{"name": kid["name"]} for kid in self.context.data().get("kids") or []
+                       if isinstance(kid, dict) and isinstance(kid.get("name"), str)
+                       and kid["name"] and kid["name"] not in known]
         answers: dict[str, Any] = {
-            "kids": [{"name": k["name"],
-                      **({"school": k["school"]} if k.get("school") else {}),
-                      **({"class_name": k["class"]} if k.get("class") else {})} for k in kids],
+            "kids": listed,
             "sources": {"wilma": {"enabled": True}},
             **({"city": city} if city else {}),
         }

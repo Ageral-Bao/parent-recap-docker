@@ -165,6 +165,9 @@ class ProgressAnswer(_Strict):
     phase: Phase | None = None
     source: SourceName | None = None
     sources: dict[SourceName, Status] = Field(default_factory=dict)
+    # One Source opened again from Finish to change it on its own, without setup's order: its step
+    # stays put once it's saved, and the page offers the way back to Finish.
+    editing: bool | None = None
     # Welcome's partner choice: null for only me. It waits here until the setup parent's own
     # address is known, since the partner mustn't be the first Recipient.
     partner: RecipientAnswer | None = None
@@ -353,7 +356,7 @@ def _section(data: dict[str, Any], key: str) -> dict[str, Any]:
 
 
 def _read_progress(path: Path) -> dict[str, Any]:
-    start: dict[str, Any] = {"phase": "welcome", "source": None,
+    start: dict[str, Any] = {"phase": "welcome", "source": None, "editing": False,
                              "sources": {s: "to-do" for s in SOURCES}}
     try:
         saved = ProgressAnswer.model_validate(json.loads(path.read_text(encoding="utf-8")))
@@ -368,6 +371,8 @@ def _merged_progress(current: dict[str, Any], p: ProgressAnswer) -> dict[str, An
         out["phase"] = p.phase
     if "source" in p.model_fields_set:
         out["source"] = p.source
+    if "editing" in p.model_fields_set:
+        out["editing"] = bool(p.editing)
     if "partner" in p.model_fields_set:
         out["partner"] = p.partner and _given(p.partner)
     if "whatsapp_chats" in p.model_fields_set:

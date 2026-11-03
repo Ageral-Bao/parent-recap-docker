@@ -80,24 +80,49 @@ class WhatsAppChat(BaseModel):
     label: str | None = None        # short topical label e.g. "class", "football", "piano"
 
 
+class WhatsAppAccount(BaseModel):
+    """A second WhatsApp number the Household reads, with the groups picked from it. `id` is also
+    the folder its pairing and messages live in, under the Linked Device's; the first number is
+    the one `WhatsAppConfig.chats` holds, so a config written before a second existed still says
+    what it said."""
+    id: str
+    label: str | None = None
+    chats: list[WhatsAppChat] = Field(default_factory=list)
+
+
 class WhatsAppConfig(BaseModel):
     enabled: bool = False
-    chats: list[WhatsAppChat] = Field(default_factory=list)
+    chats: list[WhatsAppChat] = Field(default_factory=list)  # the first number's groups
+    accounts: list[WhatsAppAccount] = Field(default_factory=list)  # every number after it
     lookback_hours: int = 26
 
-    def chat_names(self) -> list[str]:
-        return [c.name for c in self.chats]
+    def all_accounts(self) -> list[tuple[str, list[WhatsAppChat]]]:
+        """Every number read, by id, in the order they were added: the first is `chats`, which is
+        where a config with one number keeps them."""
+        first = [("1", self.chats)] if self.chats else []
+        return first + [(a.id, a.chats) for a in self.accounts if a.id != "1" and a.chats]
 
-    def picked_ids(self) -> list[str]:
-        """The picked groups' ids, which the Linked Device keeps the messages of."""
-        return list(dict.fromkeys(c.id for c in self.chats if c.id))
+    def chats_of(self, account: str) -> list[WhatsAppChat]:
+        """The groups picked from `account`."""
+        return next((chats for id_, chats in self.all_accounts() if id_ == account), [])
+
+    def all_chats(self) -> list[WhatsAppChat]:
+        return [c for _, chats in self.all_accounts() for c in chats]
+
+    def chat_names(self) -> list[str]:
+        return [c.name for c in self.all_chats()]
+
+    def picked_ids(self, account: str = "1") -> list[str]:
+        """The picked groups' ids of `account`, which the Linked Device keeps the messages of."""
+        return list(dict.fromkeys(c.id for c in self.chats_of(account) if c.id))
 
     def kid_for(self, name: str, group_id: str | None = None) -> str | None:
         """The Kid of the picked group with `group_id`, or else of the one named `name`."""
-        for c in self.chats:
+        chats = self.all_chats()
+        for c in chats:
             if group_id is not None and c.id == group_id:
                 return c.kid
-        for c in self.chats:
+        for c in chats:
             if c.name == name:
                 return c.kid
         return None

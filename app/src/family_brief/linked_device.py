@@ -27,6 +27,9 @@ if TYPE_CHECKING:
 
 PROGRAM = Path(__file__).parent / "baileys" / "linked_device.mjs"
 LOG = "linked-device.log"  # the program's log, in the log folder, every mode's
+# The number whose groups the config's own `chats` holds: the one a Household had before a second
+# existed, whose folder is the Linked Device's own rather than one under accounts/.
+FIRST = "1"
 
 # How the program exits, besides 0 once pair or groups has printed the groups.
 FAILED = 1
@@ -53,22 +56,28 @@ def folder() -> Path:
     return own_node.home() / "linked-device"
 
 
-def auth_folder() -> Path:
-    return folder() / "auth"
+def account_folder(account: str = FIRST) -> Path:
+    """Where one number's pairing and messages live: the first number's at the folder's top, as it
+    was before a second one existed, and every other under accounts/<id>."""
+    return folder() if account == FIRST else folder() / "accounts" / account
 
 
-def store() -> Path:
+def auth_folder(account: str = FIRST) -> Path:
+    return account_folder(account) / "auth"
+
+
+def store(account: str = FIRST) -> Path:
     """The message store follow appends to, one line of JSON a message."""
-    return folder() / "messages.jsonl"
+    return account_folder(account) / "messages.jsonl"
 
 
-def status_file() -> Path:
-    return folder() / "status.json"
+def status_file(account: str = FIRST) -> Path:
+    return account_folder(account) / "status.json"
 
 
-def picked_file() -> Path:
+def picked_file(account: str = FIRST) -> Path:
     """The picked groups' ids, which follow keeps the messages of."""
-    return folder() / "picked-groups.json"
+    return account_folder(account) / "picked-groups.json"
 
 
 def log_dir(cfg: Config) -> Path:
@@ -76,23 +85,27 @@ def log_dir(cfg: Config) -> Path:
     return cfg.archive.resolved_dir() / "logs"
 
 
-def command(mode: str, cfg: Config, timeout: int | None = None) -> list[str] | None:
+def command(mode: str, cfg: Config, timeout: int | None = None,
+            account: str = FIRST) -> list[str] | None:
     """The command that runs the program in `mode` on the pinned Node and the installed Baileys
-    tree, `timeout` passed on for pair and groups, or None without either."""
-    out = _command(mode, log_dir(cfg) / LOG, timeout)
+    tree, `timeout` passed on for pair and groups, or None without either. `account` is the number
+    it signs in to: each one runs its own process, on its own pairing."""
+    out = _command(mode, log_dir(cfg) / LOG, timeout, account)
     if out is not None:
         log_dir(cfg).mkdir(parents=True, exist_ok=True)
     return out
 
 
-def _command(mode: str, log: Path, timeout: int | None = None) -> list[str] | None:
+def _command(mode: str, log: Path, timeout: int | None = None,
+             account: str = FIRST) -> list[str] | None:
     node = own_node.node()
     if node is None or baileys_install.installed_version() is None:
         return None
     out = [str(node), str(PROGRAM), mode, "--modules", str(baileys_install.folder()),
-           "--auth", str(auth_folder()), "--log", str(log)]
+           "--auth", str(auth_folder(account)), "--log", str(log)]
     if mode == "follow":
-        out += ["--picked", str(picked_file()), "--store", str(store()), "--status", str(status_file())]
+        out += ["--picked", str(picked_file(account)), "--store", str(store(account)),
+                "--status", str(status_file(account))]
     elif timeout is not None:
         out += ["--timeout", str(timeout)]
     return out
@@ -142,14 +155,15 @@ def logout(timeout: int = LOGOUT_SECONDS) -> bool:
         return False
 
 
-def mark_paired() -> None:
+def mark_paired(account: str = FIRST) -> None:
     """Writes the status file of a link just paired, in place of one that ended: follow says when
     it connects."""
-    _private_folder(folder())
-    partial = status_file().with_name(f"{status_file().name}.{os.getpid()}.partial")
+    _private_folder(account_folder(account))
+    status = status_file(account)
+    partial = status.with_name(f"{status.name}.{os.getpid()}.partial")
     private_files.write(partial, json.dumps({"paired": True, "connected_since": None,
                                              "last_connected": None, "link_ended_at": None}) + "\n")
-    os.replace(partial, status_file())
+    os.replace(partial, status)
 
 
 @dataclass(frozen=True)
@@ -161,10 +175,10 @@ class Link:
     ended_at: datetime | None = None
 
 
-def link() -> Link:
+def link(account: str = FIRST) -> Link:
     """The link's status. A file that can't be read counts as no pairing."""
     try:
-        data = json.loads(status_file().read_text(encoding="utf-8"))
+        data = json.loads(status_file(account).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return Link()
     if not isinstance(data, dict):
@@ -183,17 +197,17 @@ def _time(value: Any) -> datetime | None:
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
-def keep_picked(cfg: Config) -> None:
+def keep_picked(cfg: Config, account: str = FIRST) -> None:
     """Writes the picked groups' ids to the file follow reads, unless it already lists them, so
     follow reads it again only when the pick changed."""
-    text = json.dumps({"groups": cfg.whatsapp.picked_ids()}) + "\n"
-    path = picked_file()
+    text = json.dumps({"groups": cfg.whatsapp.picked_ids(account)}) + "\n"
+    path = picked_file(account)
     try:
         if path.read_text(encoding="utf-8") == text:
             return
     except OSError:
         pass
-    _private_folder(folder())
+    _private_folder(account_folder(account))
     # A whole file in place of the old one: follow never reads one half written.
     partial = path.with_name(f"{path.name}.{os.getpid()}.partial")
     private_files.write(partial, text)
@@ -205,11 +219,11 @@ def _private_folder(path: Path) -> None:
     path.chmod(0o700)
 
 
-def records() -> list[dict[str, Any]]:
+def records(account: str = FIRST) -> list[dict[str, Any]]:
     """The store's records. A line that isn't a record, such as one follow is still writing, is
     left out."""
     try:
-        lines = store().read_text(encoding="utf-8").splitlines()
+        lines = store(account).read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:
         return []
     return [r for r in (_record(line) for line in lines) if r is not None]
@@ -226,14 +240,14 @@ def _record(line: str) -> dict[str, Any] | None:
     return record
 
 
-def prune(longest_lookback_hours: int) -> int:
+def prune(longest_lookback_hours: int, account: str = FIRST) -> int:
     """Removes the store's records older than `longest_lookback_hours` and PRUNE_MARGIN, and lines
     that aren't records. Returns how many lines went.
 
     follow appends to the store while this runs. What it appended after the store was read is
     copied over just before the pruned store replaces it, so only a line appended in that last
     instant could be lost. A line it is still writing, with no newline yet, is kept as it is."""
-    path = store()
+    path = store(account)
     try:
         with path.open("rb") as f:
             read = f.read()
@@ -261,8 +275,9 @@ def prune(longest_lookback_hours: int) -> int:
     return len(lines) - len(kept)
 
 
-def picked_records(cfg: Config, found: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+def picked_records(cfg: Config, found: Iterable[dict[str, Any]],
+                   account: str = FIRST) -> list[dict[str, Any]]:
     """The records of the groups still picked: a group unpicked since keeps its records until
     they're pruned, but they aren't read."""
-    picked = set(cfg.whatsapp.picked_ids())
+    picked = set(cfg.whatsapp.picked_ids(account))
     return [r for r in found if r.get("group_id") in picked]

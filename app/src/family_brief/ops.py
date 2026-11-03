@@ -354,36 +354,47 @@ def _check_myclub(kid: str, url: str, add) -> None:
 def check_whatsapp(cfg: Config, add, config: str | None = None) -> None:
     """The Linked Device's link, once groups are picked: connected, last connected, or needs a new
     pairing, as the always-running job's status file has it, with the picked groups by name.
-    Groups kept picked with WhatsApp turned off say it's off."""
-    if not cfg.whatsapp.chats:
+    Groups kept picked with WhatsApp turned off say it's off. Each number the Household reads gets
+    its own sentence, named when there is more than one."""
+    accounts = cfg.whatsapp.all_accounts()
+    if not accounts:
         return
     if not cfg.whatsapp.enabled:
         add(OK, "whatsapp", "off, so the Brief has no WhatsApp messages (turn it on again on the "
             "setup page)")
         return
     from . import linked_device
-    from .collectors import whatsapp
 
     def when(moment: datetime) -> str:
         return f"{moment.astimezone(ZoneInfo(cfg.timezone)):%Y-%m-%d %H:%M}"
-    link = linked_device.link()
-    if not whatsapp.connected(cfg):
-        why = f"WhatsApp ended the link on {when(link.ended_at)}" if link.ended_at else \
-            "the picked groups have no pairing with WhatsApp yet"
-        add(FAIL, "whatsapp", f"needs a new pairing: {why}, so the Brief has no WhatsApp messages "
-            "(pair again on the setup page)")
-        return
-    # By name, so the family knows which groups to post a test message in (#548).
-    names = [f'"{c.name}"' for c in cfg.whatsapp.chats if c.id]
-    picked = f"{len(names)} picked group{'' if len(names) == 1 else 's'}: {', '.join(names)}"
-    if link.connected_since:
-        add(OK, "whatsapp", f"connected since {when(link.connected_since)}, keeping {picked}")
-    elif link.last_connected:
-        add(WARN, "whatsapp", f"not connected right now, last connected {when(link.last_connected)}, "
-            f"for {picked}. It connects again by itself while you're signed in")
-    else:
-        add(WARN, "whatsapp", f"paired, but not connected yet, for {picked}. It connects once "
-            "you're signed in")
+
+    many = len(accounts) > 1
+    worst, said = OK, []
+    for account, chats in accounts:
+        link = linked_device.link(account)
+        who = f"account {account}: " if many else ""
+        if not (cfg.whatsapp.picked_ids(account) and link.paired):
+            why = f"WhatsApp ended the link on {when(link.ended_at)}" if link.ended_at else \
+                "the picked groups have no pairing with WhatsApp yet"
+            said.append(f"{who}needs a new pairing: {why}, so the Brief has no WhatsApp messages "
+                        "(pair again on the setup page)")
+            worst = FAIL
+            continue
+        # By name, so the family knows which groups to post a test message in (#548).
+        names = [f'"{c.name}"' for c in chats if c.id]
+        picked = f"{len(names)} picked group{'' if len(names) == 1 else 's'}: {', '.join(names)}"
+        if link.connected_since:
+            said.append(f"{who}connected since {when(link.connected_since)}, keeping {picked}")
+        elif link.last_connected:
+            said.append(f"{who}not connected right now, last connected "
+                        f"{when(link.last_connected)}, for {picked}. It connects again by itself "
+                        "while you're signed in")
+            worst = WARN if worst == OK else worst
+        else:
+            said.append(f"{who}paired, but not connected yet, for {picked}. It connects once "
+                        "you're signed in")
+            worst = WARN if worst == OK else worst
+    add(worst, "whatsapp", "; ".join(said))
 
 
 def _check_whatsapp_library(add) -> None:

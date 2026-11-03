@@ -21,46 +21,61 @@ MAX_BODY_CHARS = 4000
 
 
 def connected(cfg: Config) -> bool:
-    """Whether the Linked Device is paired, as its status file says, with groups picked."""
-    return cfg.whatsapp.enabled and bool(cfg.whatsapp.picked_ids()) and linked_device.link().paired
+    """Whether every number read is paired, as its status file says, with groups picked."""
+    accounts = cfg.whatsapp.all_accounts()
+    return (cfg.whatsapp.enabled and bool(accounts)
+            and all(cfg.whatsapp.picked_ids(account) and linked_device.link(account).paired
+                    for account, _ in accounts))
 
 
 def unread(cfg: Config, state: State) -> Unread | None:
     """Why picked groups aren't read tonight: they need a new pairing. Since WhatsApp ended the
     link, or, with no pairing at all, as for groups picked when WhatsApp for Mac was read, since
-    the last run that read WhatsApp."""
-    if not cfg.whatsapp.enabled or not cfg.whatsapp.chats:
+    the last run that read WhatsApp. The first number that needs one says so."""
+    if not cfg.whatsapp.enabled or not cfg.whatsapp.all_accounts():
         return None
-    link = linked_device.link()
-    if link.paired and cfg.whatsapp.picked_ids():
-        return None
-    return Unread(NEEDS_PAIRING, link.ended_at or state.caught_up_at("whatsapp"))
+    for account, _ in cfg.whatsapp.all_accounts():
+        link = linked_device.link(account)
+        if link.paired and cfg.whatsapp.picked_ids(account):
+            continue
+        return Unread(NEEDS_PAIRING, link.ended_at or state.caught_up_at("whatsapp"))
+    return None
 
 
 def collect(cfg: Config, state: State, kid_terms: list[str]) -> Collected:
     from ..run import MAX_CATCH_UP_HOURS  # here: the run module imports most of the program
 
-    linked_device.keep_picked(cfg)
-    found = linked_device.picked_records(cfg, linked_device.records())
-    # Never before a record the run could still read: a lookback widened after missed nights
-    # reaches back at most MAX_CATCH_UP_HOURS.
-    try:
-        linked_device.prune(max(MAX_CATCH_UP_HOURS, cfg.whatsapp.lookback_hours))
-    except OSError as e:  # tried again tomorrow
-        log.warning("the Linked Device's message store couldn't be pruned: %s", e)
+    found: list[tuple[str, Mapping[str, Any]]] = []
+    for account, _ in cfg.whatsapp.all_accounts():
+        linked_device.keep_picked(cfg, account)
+        found += [(account, record) for record in
+                  linked_device.picked_records(cfg, linked_device.records(account), account)]
+        # Never before a record the run could still read: a lookback widened after missed nights
+        # reaches back at most MAX_CATCH_UP_HOURS.
+        try:
+            linked_device.prune(max(MAX_CATCH_UP_HOURS, cfg.whatsapp.lookback_hours), account)
+        except OSError as e:  # tried again tomorrow
+            log.warning("the Linked Device's message store of account %s couldn't be pruned: %s",
+                        account, e)
     return Collected(messages=to_messages(cfg, state, found))
 
 
-def to_messages(cfg: Config, state: State, records: Iterable[Mapping[str, Any]]) -> list[Message]:
+def to_messages(cfg: Config, state: State,
+                records: Iterable[tuple[str, Mapping[str, Any]]]) -> list[Message]:
     """The records within the lookback as Messages, in time order, each given once: a record seen
     before, as after a reconnect hands the same message over again, is skipped, and each one given
     is marked seen. A record with no text is marked seen and not given. A Message is in its group
-    as WhatsApp names it now, and its Kid is that of the group picked with its id."""
+    as WhatsApp names it now, and its Kid is that of the group picked with its id. `records` are
+    (account, record) pairs: two numbers read different groups, and an id says which number's it
+    is."""
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=cfg.whatsapp.lookback_hours)).timestamp()
-    picked = {c.id: c.name for c in cfg.whatsapp.chats if c.id}
+    picked = {c.id: c.name for c in cfg.whatsapp.all_chats() if c.id}
     results: list[Message] = []
-    for record in sorted(records, key=lambda r: r["timestamp"]):
-        ext_id = str(record["id"])
+    for account, record in sorted(records, key=lambda pair: pair[1]["timestamp"]):
+        # The first number keeps its records' own ids, as they were before a second existed, so
+        # what the Brief already gave stays given; another number's carry its account.
+        ext_id = str(record["id"]) if account == linked_device.FIRST \
+            else f"{account}:{record['id']}"
         if record["timestamp"] < cutoff or state.has_seen_message("whatsapp", ext_id):
             continue
         body = (record.get("text") or "").strip()
@@ -77,6 +92,6 @@ def to_messages(cfg: Config, state: State, records: Iterable[Mapping[str, Any]])
             chat_name=chat_name,
             body=body[:MAX_BODY_CHARS],
             kid_hint=cfg.whatsapp.kid_for(chat_name, group_id),
-            metadata={"from_me": bool(record.get("from_me"))},
+            metadata={"from_me": bool(record.get("from_me")), "account": account},
         ))
     return results

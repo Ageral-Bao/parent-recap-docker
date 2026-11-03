@@ -419,3 +419,76 @@ Wilma 本身就把考试存成结构化数据，不需要从消息里猜：`wilm
 一位家长会在11月4日（周三）询问老师能否在学习村用餐，并愿意协助筹备，目前尚未确认能否在那里用餐。
 ```
 日期、投票结果、自带食物、待确认事项都保住了。
+
+## J. 第二个 WhatsApp 账号（后台，2026-11-03 夜）
+
+目标：两个不同的 WhatsApp 号，各自覆盖**不同的群**（用户 2026-11-03 确认），互不干扰。
+第一个号必须与改造前**完全一致**，否则会破坏已在用的配对与「已读」记录。
+
+### J1. `config.py` —— 账号模型，旧配置不动
+
+- 新增 `WhatsAppAccount {id, label, chats}`；`WhatsAppConfig.accounts` 存第二个及以后的号
+- **第一个号仍然存在原有的 `chats` 字段里**，所以任何读 `cfg.whatsapp.chats` 的旧代码（设置页、
+  保存逻辑）行为不变
+- 新增 `all_accounts() -> [(id, chats)]`、`chats_of(id)`、`all_chats()`；
+  `picked_ids(account="1")`、`kid_for()` 支持多号（`kid_for` 扫全部，群 id 本就唯一）
+
+### J2. `linked_device.py` —— 路径与命令按号分组
+
+- `account_folder("1")` = 原来的 `linked-device/`（`auth`、`messages.jsonl`、`status.json`、
+  `picked-groups.json` 全在原处）；其他号在 `linked-device/accounts/<id>/`
+- `command()`、`link()`、`records()`、`prune()`、`picked_records()`、`keep_picked()`、`mark_paired()`
+  全部加 `account="1"` 默认参数，旧调用点自动指向第一个号
+
+### J3. `nas/follow.py` —— 一个号一个进程
+
+原来 `os.execv` 把自身替换成单个 Node，只能守一个号。改成：
+
+- 每个号一条 `follow` 命令、一个子进程（WhatsApp 会因两个连接用同一配对而断链，**不能共用**）
+- 15 秒退避重启；收到 SIGTERM/SIGINT 时先 `terminate` 全部子进程、最多等 25 秒，让它们把链接关干净
+  （这正是配对不掉的关键，与 `stop_grace_period: 30s` 配合）
+
+### J4. `collectors/whatsapp.py` —— 合并两个号的记录
+
+- 逐号 `keep_picked` → 读 `records` → `picked_records` → `prune`，合并成 `(account, record)`
+- **第一个号的 external_id 保持原样**（否则「已发过」的指纹全部失配，一次重报）；
+  其他号加 `<id>:` 前缀
+- `connected()` 要求**每个号**都配对且有群；`unread()` 报告第一个需要重配的号
+
+### J5. `ops.py` —— 体检分行
+
+单号时输出与改造前逐字一致；多号时每句以 `account <id>:` 开头，`; ` 连接。
+
+**验证（无网络、只读挂载，绝不连 WhatsApp）**：
+
+```
+accounts: [('1', ['1B parents'])]
+first account external_id: AAA          ← 第一个号不变
+second account external_id: 2:BBB       ← 第二个号带前缀
+
+doctor 单号: ('✅', 'whatsapp', 'connected since 2026-11-03 17:27, keeping 1 picked group: "1B parents"')
+doctor 双号: ('❌', 'whatsapp', 'account 1: connected since …; account 2: needs a new pairing: …')
+
+follow 命令:
+  1 -> --store /root/ParentRecap/linked-device/messages.jsonl
+  2 -> --store /root/ParentRecap/linked-device/accounts/2/messages.jsonl
+```
+
+切换后生产环境：日志出现 `starting account 1: …`，`status.json` 立刻 `paired: true`，
+`connected_since` 刷新，`doctor` 12/12。
+
+### ⚠️ 事故与教训（本次）
+
+第一次验证时用 `docker run` 跑了带**真实 WhatsApp 凭据副本**的容器，且没覆盖 `ENTRYPOINT`，
+结果卡在 entrypoint 的日常循环里——等于第二个 Baileys 会话用同一配对连接，**可能导致生产者断链**。
+发现后立刻 `docker rm -f`，生产 `status.json` 仍是 `paired: true` / `link_ended_at: null`，未受影响。
+
+此后验证一律：`--network none` + 只读挂载 + `--entrypoint /opt/venv/bin/python`，
+只跑纯逻辑，不碰连接。
+
+### 还没做的（下一步）
+
+设置页的「添加第二个账号」按钮：需要 `setup_server/whatsapp.py` 的 `_Run` 支持按号并存、
+`_paired()` 写进对应账号而不是覆盖 `chats`、页面跨语言文案，**并且必须由第二部手机实扫一次才算验证**。
+在那之前，第二个号只能靠命令行配对（`linked_device.command("pair", cfg, account="2")`），
+对使用者不友好，所以没有交付为「可用」。

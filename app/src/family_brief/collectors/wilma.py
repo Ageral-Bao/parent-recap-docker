@@ -229,7 +229,11 @@ def _thread_replies(replies: list, cutoff: datetime | None, source_tag: str,
     """A Wilma thread's replies inside `cutoff`, each as a message of its own: who answered, when
     and what they said. A reply carries no id of its own, so its id is a fingerprint of its author,
     its time and the start of its text, which stays the same when the thread grows. `addressees`
-    is the thread's, since everyone who got the first post got the replies too."""
+    is the thread's, since everyone who got the first post got the replies too.
+
+    No reply is skipped for having been seen, exactly as the thread's own messages aren't: the
+    window is what keeps one from appearing in two Briefs, and gating on seen as well would swallow
+    a reply on a second run of the same night — a re-send, or a run after a failure."""
     out: list[Message] = []
     for reply in replies:
         if not isinstance(reply, dict):
@@ -243,8 +247,6 @@ def _thread_replies(replies: list, cutoff: datetime | None, source_tag: str,
             f"{ts.isoformat() if ts else ''}|{sender}|{body[:40]}".encode("utf-8")).hexdigest()[:12]
         external_id = f"{source_tag}:{scope}:{wilma_id}:{fingerprint}" if scope \
             else f"{source_tag}:{wilma_id}:{fingerprint}"
-        if state.has_seen_message("wilma", external_id):
-            continue
         out.append(Message(
             source="wilma",
             external_id=external_id,

@@ -222,18 +222,64 @@ def _addressees(item: dict) -> int | None:
     return len(different) or None
 
 
+def _thread_replies(replies: list, cutoff: datetime | None, source_tag: str,
+                    scope: str | None, wilma_id: Any, state: State, subject: str,
+                    student_name: Any, student_number: Any,
+                    address: str | None, addressees: int | None) -> list[Message]:
+    """A Wilma thread's replies inside `cutoff`, each as a message of its own: who answered, when
+    and what they said. A reply carries no id of its own, so its id is a fingerprint of its author,
+    its time and the start of its text, which stays the same when the thread grows. `addressees`
+    is the thread's, since everyone who got the first post got the replies too."""
+    out: list[Message] = []
+    for reply in replies:
+        if not isinstance(reply, dict):
+            continue
+        ts = _parse_ts(_first(reply, "sentAt", "date", "createdAt"))
+        if cutoff and (ts is None or ts < cutoff):
+            continue
+        sender = _first(reply, "senderName", "sender", "from", default="") or ""
+        body = _first(reply, "content", "body", "text", default="") or ""
+        fingerprint = hashlib.sha1(
+            f"{ts.isoformat() if ts else ''}|{sender}|{body[:40]}".encode("utf-8")).hexdigest()[:12]
+        external_id = f"{source_tag}:{scope}:{wilma_id}:{fingerprint}" if scope \
+            else f"{source_tag}:{wilma_id}:{fingerprint}"
+        if state.has_seen_message("wilma", external_id):
+            continue
+        out.append(Message(
+            source="wilma",
+            external_id=external_id,
+            timestamp=ts or datetime.now(timezone.utc),
+            sender=str(sender) if sender else None,
+            subject=str(subject),
+            body=str(body)[:MAX_BODY_CHARS],
+            chat_name=source_tag,
+            kid_hint=student_name,
+            metadata={"wilma_kind": source_tag, "raw_id": wilma_id,
+                      "student_number": student_number, "wilma_url": address,
+                      "wilma_thread_reply": True, "addressee_count": addressees},
+        ))
+        state.mark_message_seen("wilma", external_id)
+    return out
+
+
 def _collect_list(state: State, source_tag: str,
                    list_cmd: list[str],
                    read_cmd_prefix: list[str] | None,
                    cutoff: datetime | None = None,
-                   wilmas: _Wilmas | None = None) -> list[Message]:
+                   wilmas: _Wilmas | None = None,
+                   expand_threads: bool = False) -> list[Message]:
     """Pull a list (messages|news) per student and fetch bodies. Each item's id carries its Wilma's
     tag when that is known.
 
     Every item inside `cutoff` is summarized, whether or not an earlier Brief already carried it:
     a message the parents have read in Wilma, or one last night's Brief mentioned, is still part of
     the day it belongs to. `cutoff` therefore starts where the last delivered run left off, so an
-    item appears in one Brief, not in every one that follows."""
+    item appears in one Brief, not in every one that follows.
+
+    With `expand_threads`, a message's replies inside `cutoff` are messages of their own: the list
+    gives a thread's latest activity and its first post's sender, so without them tonight's answer
+    from a teacher reads as nothing new, and the post that started the thread speaks in its place.
+    """
     payload = _run_or_log(list_cmd)
     if payload is None:
         return []
@@ -265,6 +311,7 @@ def _collect_list(state: State, source_tag: str,
             sender = _first(it, "sender", "from", "senderName", "author", default="")
 
             body, addressees = "", None
+            replies: list = []
             if read_cmd_prefix and student_number:
                 try:
                     detail = _item(_run([*read_cmd_prefix, str(wilma_id), "--student",
@@ -278,23 +325,34 @@ def _collect_list(state: State, source_tag: str,
                 addressees = _addressees(detail)
                 if not sender:
                     sender = _first(detail, "senderName", "sender", "from", "author", default="")
+                # The list dates a thread by its latest activity; the read gives the first post's
+                # own date, which is the one that belongs to this message.
+                own = _parse_ts(_first(detail, "sentAt", "publishedAt", "date", "createdAt"))
+                if own:
+                    ts = own
+                if expand_threads and isinstance(detail.get("replies"), list):
+                    replies = detail["replies"]
 
             metadata = {"wilma_kind": source_tag, "raw_id": wilma_id,
                         "student_number": student_number, "wilma_url": address}
             if source_tag == "message":
                 metadata["addressee_count"] = addressees  # sent_to_everyone reads it
-            results.append(Message(
-                source="wilma",
-                external_id=dedup_key,
-                timestamp=ts or datetime.now(timezone.utc),
-                sender=str(sender) if sender else None,
-                subject=str(subject),
-                body=str(body)[:MAX_BODY_CHARS],
-                chat_name=source_tag,
-                kid_hint=student_name,
-                metadata=metadata,
-            ))
+            if not (cutoff and (ts is None or ts < cutoff)):
+                results.append(Message(
+                    source="wilma",
+                    external_id=dedup_key,
+                    timestamp=ts or datetime.now(timezone.utc),
+                    sender=str(sender) if sender else None,
+                    subject=str(subject),
+                    body=str(body)[:MAX_BODY_CHARS],
+                    chat_name=source_tag,
+                    kid_hint=student_name,
+                    metadata=metadata,
+                ))
             state.mark_message_seen("wilma", dedup_key)
+            results.extend(_thread_replies(replies, cutoff, source_tag, scope, wilma_id, state,
+                                           subject, student_name, student_number, address,
+                                           addressees))
 
     log.info("wilma %s: %d items total, %d new", " ".join(list_cmd), total, len(results))
     return results
@@ -508,6 +566,73 @@ def _collect_notes(state: State) -> list[Message]:
     return out
 
 
+# How far back the homework list reaches: one set on Friday is still to be done on Monday evening,
+# and nothing is finished in Wilma, so the window is what keeps a task in the Brief while it lasts.
+HOMEWORK_WINDOW_DAYS = 4
+
+
+def _collect_homework() -> list[Message]:
+    """The homework teachers set in the last HOMEWORK_WINDOW_DAYS as a synthetic Message per run:
+    the lesson it was set in, what to do in the teacher's own words (pages, exercises) and who set
+    it. Wilma dates homework by the lesson that set it, not by when it is due, so the Brief says
+    when it was set and never invents a deadline."""
+    from datetime import date as _date, timedelta as _td
+
+    payload = _run_or_log(["homework", "--limit", "50"])
+    if not isinstance(payload, dict):
+        return []
+
+    today = datetime.now().astimezone().date()
+    first = today - _td(days=HOMEWORK_WINDOW_DAYS - 1)
+    lines: list[str] = []
+    count = 0
+    for block in payload.get("students") or []:
+        if not isinstance(block, dict):
+            continue
+        student = block.get("student") if isinstance(block.get("student"), dict) else {}
+        recent: list[tuple[_date, dict]] = []
+        for task in block.get("homework") or []:
+            if not isinstance(task, dict):
+                continue
+            try:
+                day = _date.fromisoformat(str(task.get("date")))
+            except ValueError:
+                continue
+            if first <= day <= today:
+                recent.append((day, task))
+        if not recent:
+            continue
+        lines.append(f"— {student.get('name', '?')} —")
+        for day, task in sorted(recent, key=lambda pair: pair[0], reverse=True):
+            ago = (today - day).days
+            rel = {0: "today", 1: "yesterday"}.get(ago, f"{ago} days ago")
+            line = (f"  [{day.isoformat()} {_WEEKDAYS[day.weekday()]} · {rel}]  "
+                    f"{_first(task, 'subject', default='') or '?'}")
+            text = _first(task, "homework", default="") or ""
+            if text:
+                line += f"  |  {text}"
+            teacher = _first(task, "teacher", default="") or ""
+            if teacher:
+                line += f"  |  teacher: {teacher}"
+            lines.append(line)
+            count += 1
+        lines.append("")
+
+    if not lines:
+        log.info("wilma homework: none set in the last %d days", HOMEWORK_WINDOW_DAYS)
+        return []
+    log.info("wilma homework: %d tasks set in the last %d days", count, HOMEWORK_WINDOW_DAYS)
+    return [Message(
+        source="wilma",
+        external_id=f"homework:{today.isoformat()}",
+        timestamp=datetime.now(timezone.utc),
+        subject=f"Homework set in the last {HOMEWORK_WINDOW_DAYS} days (from {first.isoformat()})",
+        body="\n".join(lines)[:MAX_BODY_CHARS],
+        chat_name="homework",
+        metadata={"wilma_kind": "homework", "first_date": first.isoformat()},
+    )]
+
+
 # How many people a Wilma message must be addressed to, by the names Wilma lists, to count as sent
 # to everyone (ADR 0013). A message about one child goes to its guardians (usually two, rarely
 # four), its teachers and the school's student welfare staff (principal, school social worker,
@@ -564,6 +689,7 @@ def collect(cfg: Config, state: State, kid_terms: list[str]) -> Collected:
         read_cmd_prefix=["messages", "read"],
         cutoff=cutoff,
         wilmas=wilmas,
+        expand_threads=True,
     )
     news = _collect_list(
         state, "news",
@@ -577,4 +703,5 @@ def collect(cfg: Config, state: State, kid_terms: list[str]) -> Collected:
         wilmas=wilmas,
     )
     schedule = _collect_schedule(state, wilmas)
-    return Collected(messages=[*msgs, *news, *schedule, *_collect_exams(), *_collect_notes(state)])
+    return Collected(messages=[*msgs, *news, *schedule, *_collect_exams(), *_collect_notes(state),
+                               *_collect_homework()])

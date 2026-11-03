@@ -562,3 +562,104 @@ Wilma 的 `_signed_in` 在 editing 模式下完成登录**不推进 phase**（�
 ### 顺带修正
 
 `tools/test_edit_flow.py` 沉淀为可复跑的验证脚本（容器内 python 驱动，不依赖 curl）。
+
+## L. Wilma 的回复与家庭作业（2026-11-03 晚）
+
+用户问：为什么今晚的日报里没有学校老师发的消息内容？
+
+### L1. 根因：只读消息**列表**，从不读**线程**
+
+11-03 20:00 的简报正文只有课表，Wilma 那条私信和 WhatsApp 群消息都没进摘要。
+但采集没有失败——`2026-11-03.raw.json` 里确实有：
+
+```
+wilma 2026-11-03T13:24:00 **Concern about the pupil's growth** <the parent (Kid A)>
+```
+
+问题在这一行本身就是错的。`wilma messages list` 给的是：
+
+| 字段 | 列表给的值 | 实际含义 |
+|---|---|---|
+| `sentAt` | `2026-11-03T13:24` | **线程最新活动时间**，不是这条消息的时间 |
+| `senderName` | `the parent` | **线程首条**（家长 10-11 问校护士的那封）的发信人 |
+| `replyCount` | `5` | 线程里有 5 条回复——**内容全部没取** |
+
+代码只用列表值 + `messages read` 的 `body`，所以拿到的是「10-11 家长自己的问询正文」，
+贴上「11-03 13:24」的时间戳。真正的新内容——校护士 the nurse 13:13 回复「已咨询学校医生、
+医生的答复经 Lunna 发送」——从来没进过模型输入。
+
+**一句话：消息线程的回复不在代码眼里。**
+
+### L2. `collectors/wilma.py` — 展开线程
+
+- `_collect_list(..., expand_threads=True)`（只对 message 开，news 没有回复）
+- 读 detail 后用 `detail.sentAt` **覆盖**列表时间：首条回到它真实的 10-11，
+  于是它自然落在窗口外、不再冒充今晚的消息
+- 新增 `_thread_replies()`：窗口内每条回复各成一条 Message
+  - `external_id` = `message:<scope>:<threadId>:<sha1(sentAt|sender|content[:40])>`——
+    回复本身没有 id，用指纹，线程后续增长也不会让旧指纹失配
+  - `sender` / `timestamp` / `body` 都用回复自己的
+  - `addressee_count` 继承线程的（谁收到首条就收到回复），AI filter 判定口径一致
+  - `subject` 沿用线程主题，模型据此知道是同一条对话
+
+### L3. `collectors/wilma.py` — 家庭作业
+
+`wilma homework --json` 给 `{students:[{student, homework:[{date, subject, subjectCode,
+homework, teacher}]}]}`，`date` 是**布置作业的那节课**，不是截止日。
+
+`_collect_homework()` → 每晚一条合成消息（`external_id = homework:<今天>`）：
+
+```
+— Kid A —
+  [2026-11-02 Mon · yesterday]  Englanti, A1  |  Workbook s. 54 t. 18 ja s. 56 t. 22 (saat apua tähän tehtävään sivuilta 209 ja 210)  |  teacher: the teacher
+```
+
+窗口 `HOMEWORK_WINDOW_DAYS = 4`：周五布置的作业到周一晚上仍要能看到（Wilma 没有「已完成」状态，
+所以靠窗口让它自然过期，不猜完成与否）。没有作业的孩子不出现该段。
+
+### L4. `summarize.py` — 三条规则
+
+1. **Your job 第 3 条**加上「学校方面的回复」与「老师布置的作业」——
+   按 I 组的教训，规则放 Notes 区不保证执行，关键项必须进 Your job
+2. **作业**（Notes）：逐条一行、页码题号照抄、括号内容不能省、不许编截止日、
+   **作业本身不是待办**（例外：老师要求签字/缴费/带东西）
+3. **线程**（Notes）：学校方面（老师、校护士、心理师、校长、学生福利）的发言是该孩子的新消息，
+   写清回复了什么、还要家长做什么；家长自己的发言不算新闻，但若窗口内家长也回了，
+   **必须同一行说出来**——只写学校的答复会让人以为事情已经结束
+
+### 验证（容器内，真实数据）
+
+**采集**（`tools/test_wilma_collect.py`）：
+
+```
+== messages inside 26h: 2 ==
+[2026-11-03 13:13] the school nurse | Huoli pojan kasvusta...  reply=True addressees=1
+    Hei, konsultoin koululääkäriä... Lähetin lääkärin vastauksen teille Lunnan kautta...
+[2026-11-03 13:24] the parent (Kid A) | Huoli pojan kasvusta...  reply=True
+    hi, i check my Lunna... did not find any discusion or documents...
+
+== Homework set in the last 4 days (from 2026-10-31) ==
+— Kid A —
+  [2026-11-02 Mon · yesterday]  Englanti, A1  |  Workbook s. 54 t. 18 ja s. 56 t. 22 (...)  |  teacher: the teacher
+```
+
+**摘要**（`tools/test_wilma_summarize.py`，跑 4 轮）：
+
+改前（20:00 实际发出的）：
+```
+### Andy
+- 11月4日 周三学校 8:30 开始，13:30 结束。
+```
+
+改后（两轮稳定）：
+```
+### Andy
+- 校护士说，她已就上周讨论的生长和青春期发育问题咨询校医，并通过 Lunna 把医生的回复发给家长。
+  家长说在 Lunna 里没找到老师的反馈或文件，并询问在哪里查看；这个问题尚待答复。
+- 11月2日 周一英语 A1 课作业：练习册第54页第18题和第56页第22题（可参考第209和210页获得帮助）。
+```
+
+`citations: entries=2, unverified=0`。
+
+**已知瑕疵**：模型偶发把 terveydenhoitaja（校护士）与 koululääkäri（校医）混称
+（「校医说已咨询校医」）；信息本身没错，暂不改，若复现再在术语表里加词。

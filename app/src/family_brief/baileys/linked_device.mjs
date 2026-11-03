@@ -284,6 +284,14 @@ function storeRecord(baileys, creds, message) {
   let text;
   if (type === "conversation") text = body;
   else if (type === "extendedTextMessage") text = body?.text;
+  else if (type.startsWith("pollCreation")) {
+    // What parents are being asked, and the choices they have: "[poll]" alone tells the Brief
+    // nothing about a group's vote.
+    const asked = (body?.name || "").trim();
+    const choices = (body?.options || []).map((o) => (o?.optionName || "").trim()).filter(Boolean);
+    text = asked ? `[poll] ${asked}${choices.length ? ` — ${choices.join(" / ")}` : ""}`
+                 : PLACEHOLDERS[type];
+  }
   else if (type in PLACEHOLDERS) {
     text = body?.caption?.trim() || (body?.gifPlayback ? "[GIF]" : PLACEHOLDERS[type]);
   }

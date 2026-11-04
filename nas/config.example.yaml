@@ -4,10 +4,10 @@
 
 # Who the Brief is about. MyClub's own calendar is per child, as the club gives it.
 kids:
-  - name: Kid A
-    everyday_name: Andy
-  - name: Kid B
-    everyday_name: Eric
+  - name: First Kid
+    everyday_name: First
+  - name: Second Kid
+    everyday_name: Second
     # The club's own feed (webcal://…): the Brief reads it, and so lists the training and matches.
     myclub_ical_url: webcal://id.myclub.fi/flow/calendar_subscriptions/00000.ics?token=REPLACE_ME
 

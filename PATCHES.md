@@ -305,7 +305,7 @@ DRY-RUN: calendar mode=ics, 4 candidate events
 - 11月3日 周二学校日程：9:15开始，12:20结束。
 ...
 • ⚽ Pojat 2019: Honka P2019 treenit — 11月3日 周二 18:30 (Eric)
-   <venue, address> · https://club.example.fi/...
+   <venue, address> · <club link>
 ```
 
 候选事件从 12 个（含 11-15、12 月一堆）降到 4 个，正文从 0 字到 602 字且带明天的时间。
@@ -573,7 +573,7 @@ Wilma 的 `_signed_in` 在 editing 模式下完成登录**不推进 phase**（�
 但采集没有失败——`2026-11-03.raw.json` 里确实有：
 
 ```
-wilma 2026-11-03T13:24:00 **Concern about the pupil's growth** <the parent (Kid A)>
+wilma 2026-11-03T13:24:00 **Concern about the pupil's growth (example subject)** <the parent (Kid A)>
 ```
 
 问题在这一行本身就是错的。`wilma messages list` 给的是：
@@ -633,9 +633,9 @@ homework, teacher}]}]}`，`date` 是**布置作业的那节课**，不是截止�
 
 ```
 == messages inside 26h: 2 ==
-[2026-11-03 13:13] the school nurse | Huoli pojan kasvusta...  reply=True addressees=1
+[2026-11-03 13:13] the school nurse | Concern about the pupil's growth...  reply=True addressees=1
     Hei, konsultoin koululääkäriä... Lähetin lääkärin vastauksen teille Lunnan kautta...
-[2026-11-03 13:24] the parent (Kid A) | Huoli pojan kasvusta...  reply=True
+[2026-11-03 13:24] the parent (Kid A) | Concern about the pupil's growth...  reply=True
     hi, i check my Lunna... did not find any discusion or documents...
 
 == Homework set in the last 4 days (from 2026-10-31) ==

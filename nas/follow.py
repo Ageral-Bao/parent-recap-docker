@@ -37,6 +37,10 @@ def main() -> int:
 
     commands: dict[str, list[str]] = {}
     for account in accounts:
+        # The picked groups' file is what each child follows, and only `install_follow` writes it
+        # otherwise — which a container has no job to run. Written here, so groups picked on the
+        # setup page are followed without a pairing or a restart.
+        linked_device.keep_picked(cfg, account)
         command = linked_device.command("follow", cfg, account=account)
         if command is None:
             print("the Linked Device can't start: no pinned Node, or no Baileys tree in "
@@ -73,6 +77,15 @@ def main() -> int:
         # removal leaves its child as it was until the next restart.
         if now - checked >= CONFIG_SECONDS:
             checked = now
+            # Groups picked or unpicked on the setup page, and numbers added there: the file
+            # follow reads is rewritten from the config the page saved.
+            try:
+                fresh = Config.load(None)
+            except Exception:  # a save in progress leaves it unreadable for a moment
+                fresh = None
+            if fresh is not None and fresh.whatsapp.enabled:
+                for account in accounts:
+                    linked_device.keep_picked(fresh, account)
             for account, command in _added_accounts(commands):
                 commands[account] = command
                 accounts.append(account)

@@ -371,6 +371,11 @@ def _collect_schedule(state: State, wilmas: _Wilmas | None = None) -> list[Messa
     next actual school day (usually Monday). We must therefore label the message
     with the concrete ISO date the returned lessons *actually* fall on, so the LLM
     doesn't treat "tomorrow" literally.
+
+    Never gated on seen: the timetable is the one thing a night must carry for a Kid with nothing
+    else that day, and a second run of the same night — a re-send, or a run after a failure —
+    would otherwise leave that Kid out of the Brief altogether. The id is the day's, so the run
+    after this one gets an id of its own.
     """
     payload = _run_or_log(["schedule", "list", "--all-students", "--when", "tomorrow"])
     if payload is None:
@@ -379,8 +384,6 @@ def _collect_schedule(state: State, wilmas: _Wilmas | None = None) -> list[Messa
         (wilmas or _Wilmas(set())).log_problems(payload)
     now = datetime.now(timezone.utc)
     sched_ext_id = f"schedule:{now.strftime('%Y%m%d')}"
-    if state.has_seen_message("wilma", sched_ext_id):
-        return []
 
     # Group lessons by their actual date (per-student), so LLM sees which day these belong to.
     from collections import defaultdict
@@ -542,7 +545,11 @@ def _collect_notes(state: State) -> list[Message]:
             fingerprint = hashlib.sha1(
                 f"{day}|{start}|{course}|{label}|{text[:60]}".encode("utf-8")).hexdigest()[:16]
             external_id = f"note:{fingerprint}"
-            if state.has_seen_message("wilma", external_id):
+            # Seen tonight already doesn't mean done with: a run made again the same evening — the
+            # setup page's preview, a re-send after a Quiet night — must still carry it, or the one
+            # note Wilma logged that day quietly leaves the Brief. A note seen on an earlier day
+            # stays out, which is what keeps one from appearing two nights running.
+            if state.seen_before_today("wilma", external_id):
                 continue
 
             try:
@@ -576,8 +583,8 @@ HOMEWORK_WINDOW_DAYS = 4
 def _collect_homework() -> list[Message]:
     """The homework teachers set in the last HOMEWORK_WINDOW_DAYS as a synthetic Message per run:
     the lesson it was set in, what to do in the teacher's own words (pages, exercises) and who set
-    it. Wilma dates homework by the lesson that set it, not by when it is due, so the Brief says
-    when it was set and never invents a deadline."""
+    it. Wilma dates homework by the lesson that set it, not by when it is due, so each line says
+    `set` before the date the Brief must report, and never invents a deadline."""
     from datetime import date as _date, timedelta as _td
 
     payload = _run_or_log(["homework", "--limit", "50"])
@@ -608,7 +615,7 @@ def _collect_homework() -> list[Message]:
         for day, task in sorted(recent, key=lambda pair: pair[0], reverse=True):
             ago = (today - day).days
             rel = {0: "today", 1: "yesterday"}.get(ago, f"{ago} days ago")
-            line = (f"  [{day.isoformat()} {_WEEKDAYS[day.weekday()]} · {rel}]  "
+            line = (f"  [set {day.isoformat()} {_WEEKDAYS[day.weekday()]} · {rel}]  "
                     f"{_first(task, 'subject', default='') or '?'}")
             text = _first(task, "homework", default="") or ""
             if text:
@@ -681,7 +688,12 @@ def collect(cfg: Config, state: State, kid_terms: list[str]) -> Collected:
     # Where the last run that carried Wilma in full left off: a message that run already gave is
     # still tonight's if it arrived after it, and one the parents have read in Wilma is no
     # different from one they haven't. Never further back than the configured lookback.
-    caught_up = state.caught_up_at("wilma")
+    #
+    # A run told to reach further back — the setup page's preview asks for three days, so a
+    # family setting itself up at night sees a Brief rather than only what came after that
+    # night's — keeps the wider window: narrowing it to the last delivery would show an empty
+    # Brief to someone who has just been sent one.
+    caught_up = None if getattr(state, "ignore_caught_up", False) else state.caught_up_at("wilma")
     if caught_up and caught_up > cutoff:
         cutoff = caught_up
     wilmas = _Wilmas({k.name.casefold() for k in cfg.kids})

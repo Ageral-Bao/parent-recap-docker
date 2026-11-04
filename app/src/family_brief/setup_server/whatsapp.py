@@ -16,9 +16,11 @@ off removes the job, the pairing and the messages kept."""
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import threading
 from dataclasses import dataclass
+from datetime import datetime
 from http import HTTPStatus
 from typing import Any
 
@@ -135,7 +137,9 @@ class WhatsApp(Phase):
         return str(n)
 
     def _start(self, account: str) -> Reply:
-        """Runs `pair` for `account`, one at a time."""
+        """Runs `pair` for `account`, one at a time. A number that is already paired has its
+        folder copied aside first: pairing writes over it, and a pairing of the wrong number — a
+        phone scanned for the other number's step — would otherwise leave nothing to go back to."""
         with self._lock:
             if self._run is not None and self._run.said["result"] in UNDER_WAY:
                 return HTTPStatus.OK, self._run.said
@@ -145,13 +149,15 @@ class WhatsApp(Phase):
             if command is None:
                 self._run = None
                 return HTTPStatus.OK, {"result": "no-library"}
+            kept = _keep_before_pairing(account)
             following = jobs.always_status().installed
             if following:
                 jobs.stop_always()
             proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE, text=True, encoding="utf-8",
                                     errors="replace")
-            run = _Run(proc, {"result": "starting"}, account=account)
+            run = _Run(proc, {"result": "starting", **({"kept": kept} if kept else {})},
+                       account=account)
             self._run = run
         threading.Thread(target=self._pairing, args=(run, following), daemon=True).start()
         return HTTPStatus.OK, run.said
@@ -350,6 +356,24 @@ class WhatsApp(Phase):
         except Exception as e:
             failure.logged("The Linked Device's job wasn't installed",
                            failure.raised(e, "Installing the job"))
+
+
+def _keep_before_pairing(account: str) -> str | None:
+    """Copies `account`'s pairing folder aside before `pair` writes over it, and answers the
+    copy's name. None when there was nothing to keep: a first pairing has none, and the copy of
+    one is not made twice in a day, so a folder is never a chain of stale copies."""
+    folder = linked_device.account_folder(account)
+    auth = folder / "auth"
+    if not (auth / "creds.json").is_file():
+        return None
+    name = f"auth.before-repair-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    try:
+        shutil.copytree(auth, folder / name)
+    except OSError as e:
+        failure.logged("The pairing that is there wasn't copied aside",
+                       failure.raised(e, "Copying the pairing"))
+        return None
+    return name
 
 
 def needs_pairing(cfg: Config) -> bool:

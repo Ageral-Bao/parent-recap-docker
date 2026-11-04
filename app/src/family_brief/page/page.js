@@ -1467,11 +1467,20 @@ function firstWhatsApp() {
   document.getElementById("whatsapp-steps").hidden = true;
   document.getElementById("whatsapp-on").hidden = false;
   // Opened from Finish to change the account: a phone that no longer lists the device pairs
-  // again from here, without the whole setup being walked through.
+  // again from here, without the whole setup being walked through. The wording names the number,
+  // since this re-pairs the one already linked and replaces it — a second phone is added above.
   const again = document.getElementById("whatsapp-again");
   again.hidden = !page.progress.editing;
-  if (page.progress.editing) setText(again, "whatsapp.repair");
+  if (page.progress.editing) {
+    setText(again, "whatsapp.repair", { n: numbersFirst() });
+  }
   showSource("whatsapp.paired");
+}
+
+// The number this step is about: the one linked already, which is the first.
+function numbersFirst() {
+  const numbers = page.whatsapp.accounts || [];
+  return numbers.length ? numbers[0].id : "1";
 }
 
 // A pairing the phone hasn't scanned is ended as the parent moves on, so it can't link later.

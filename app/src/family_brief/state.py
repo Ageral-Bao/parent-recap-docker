@@ -89,6 +89,20 @@ class State:
         bucket = self._data["seen_message_ids"].setdefault(source, {})
         bucket[msg_id] = datetime.now(timezone.utc).isoformat()
 
+    def seen_before_today(self, source: str, msg_id: str) -> bool:
+        """Whether `msg_id` was marked seen on a day before today, in the Household's own time.
+        One seen today was marked by a run made today, and a run made again the same evening — a
+        preview, a re-send — must still carry it; one seen on an earlier day belongs to that
+        night's Brief and stays out of this one."""
+        seen = self._data["seen_message_ids"].get(source, {})
+        if msg_id not in seen:
+            return False
+        try:
+            marked = datetime.fromisoformat(str(seen[msg_id]))
+        except ValueError:
+            return True  # unreadable: treat it as long seen rather than repeat it
+        return marked.astimezone().date() < datetime.now().astimezone().date()
+
     def has_created_event(self, event_hash: str) -> bool:
         return event_hash in self._data["created_event_hashes"]
 

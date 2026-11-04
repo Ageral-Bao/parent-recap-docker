@@ -589,6 +589,9 @@ def run(cfg: Config, options: Options, io: IO) -> int:
         log.info("Lookback overridden to %d hours (all sources)", options.lookback_hours)
     private_files.tighten(cfg)
     state = io.load_state(cfg.resolved_state_path())
+    # Asked to reach further back than a night, as the setup page's preview does: the family wants
+    # to see the last few days' Brief, not only what came after the one they were just sent.
+    state.ignore_caught_up = options.lookback_hours is not None
     if options.lookback_hours is None:
         _catch_up_lookback(cfg, state)
 

@@ -258,9 +258,33 @@ function connect(baileys, auth, handlers, events = {}) {
   return socket;
 }
 
+// A device that has just connected has only the groups WhatsApp pushed so far, and it pushes them
+// over the first few seconds: reading at once gives a shorter list than the phone holds, which is
+// how a group the family is in went missing from the picker. Wait until the count stops growing.
+const GROUPS_SETTLE_MS = 9000;
+const GROUPS_POLL_MS = 700;
+
+async function settledGroups(socket) {
+  const deadline = Date.now() + GROUPS_SETTLE_MS;
+  let last = -1;
+  let groups = {};
+  while (Date.now() < deadline) {
+    groups = await socket.groupFetchAllParticipating();
+    const count = Object.keys(groups).length;
+    if (count > last) {
+      last = count;
+      await new Promise((done) => setTimeout(done, GROUPS_POLL_MS));
+      continue;
+    }
+    break; // a round that grew nothing: this is the device's group list
+  }
+  return groups;
+}
+
 async function listGroups(socket) {
-  const groups = Object.values(await socket.groupFetchAllParticipating())
+  const groups = Object.values(await settledGroups(socket))
     .map(({ id, subject }) => ({ id, subject }))
+    .filter(({ id }) => typeof id === "string")
     .sort((a, b) => String(a.subject).localeCompare(String(b.subject)));
   log("info", `listed ${groups.length} groups`);
   say({ groups });

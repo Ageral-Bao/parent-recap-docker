@@ -23,8 +23,8 @@ from http import HTTPStatus
 from typing import Any
 
 from .. import failure, linked_device, setup_save, setup_whatsapp
-from ..config import Config
-from ..setup_connect import Nothing, Reply, parse
+from ..config import Config, WhatsAppChat
+from ..setup_connect import Nothing, Reply, Strict, parse
 from ..system import jobs
 from .connect import go_back
 from .context import Action, Phase
@@ -44,12 +44,19 @@ OFF_RESULTS = ("off", "failed")
 AFTER_CONNECT = ("check", "first-brief", "finish")
 
 
+class NumberGroups(Strict):
+    """The groups picked from a number just added, by the names it lists."""
+    groups: list[str]
+
+
 @dataclass
 class _Run:
     """One run of `pair`. `said` is replaced whole, never changed in place, so a check reads
-    either the last word or the one before."""
+    either the last word or the one before. `account` is the number it signs in to: the first is
+    `linked_device.FIRST`, and each further one is a number added from the page."""
     proc: subprocess.Popen
     said: dict[str, Any]
+    account: str = linked_device.FIRST
     stopped: bool = False
     off: bool = False  # ended as WhatsApp was turned off: nothing is installed after it
 
@@ -62,11 +69,16 @@ class WhatsApp(Phase):
         # The phase a page opened again was at before it was taken to pair again, which pairing
         # returns it to. None when the family got to the step in setup's order.
         self._back_to: str | None = None
+        # A further number just paired, waiting for the family to pick its groups: its id and the
+        # groups it lists. Kept here rather than in setup's progress, which is about the Sources.
+        self._new: dict[str, Any] | None = None
 
     def routes(self) -> dict[str, Action]:
-        return {"api/whatsapp/pair": self.pair, "api/whatsapp/check": self.check_pairing,
+        return {"api/whatsapp/pair": self.pair, "api/whatsapp/add": self.add_number,
+                "api/whatsapp/check": self.check_pairing,
                 "api/whatsapp/stop": self.stop_pairing, "api/whatsapp/off": self.turn_off,
-                "api/whatsapp/done": self.go_on, "api/whatsapp/groups": self.change_groups}
+                "api/whatsapp/done": self.go_on, "api/whatsapp/groups": self.change_groups,
+                "api/whatsapp/account": self.save_number_groups}
 
     def opening(self) -> None:
         """Takes a page opened with picked groups that need a new pairing to the step: the link
@@ -86,19 +98,50 @@ class WhatsApp(Phase):
                                                     "sources": {"whatsapp": "to-do"}}})
 
     def state(self, progress: dict[str, Any]) -> dict[str, Any]:
-        """The groups picked already, by name, which a new pairing keeps and Finish lists."""
-        return {"whatsapp": {"picked": self.context.model().whatsapp.chat_names()}}
+        """The groups picked already, by name, which a new pairing keeps and Finish lists, and
+        the numbers read, so the step can show them and offer one more."""
+        cfg = self.context.model()
+        return {"whatsapp": {
+            "picked": cfg.whatsapp.chat_names(),
+            "accounts": [{"id": account, "count": len(chats)}
+                         for account, chats in cfg.whatsapp.all_accounts()],
+            "pending": self._new["account"] if self._new else None,
+        }}
 
     def pair(self, raw: Any) -> Reply:
         """Starts pairing, unless a pairing is under way, which the page then goes on with. A
         running always-running job is stopped first, so it doesn't write the pairing it was
         started with over the new one."""
         parse(Nothing, raw)
+        return self._start(linked_device.FIRST)
+
+    def add_number(self, raw: Any) -> Reply:
+        """Pairs one more number, for a Household reading a second phone's groups: its own folder,
+        its own pairing, so the numbers already read are untouched. The page shows the code to
+        scan exactly as for the first one."""
+        parse(Nothing, raw)
+        return self._start(self._next_account())
+
+    def _next_account(self) -> str:
+        """The id of the next number to add: one past the highest already read, so a number that
+        was removed leaves its folder's id free rather than being reused with a stale pairing."""
+        cfg = self.context.model()
+        used = {a.id for a in cfg.whatsapp.accounts}
+        n = 1
+        while n == 1 or str(n) in used:  # the first number is never a folder of its own
+            n += 1
+            if n > 20:  # a Household reads a phone or two; this is a stuck loop, not a real case
+                break
+        return str(n)
+
+    def _start(self, account: str) -> Reply:
+        """Runs `pair` for `account`, one at a time."""
         with self._lock:
             if self._run is not None and self._run.said["result"] in UNDER_WAY:
                 return HTTPStatus.OK, self._run.said
             command = linked_device.command("pair", self.context.model(),
-                                            timeout=self.context.timeouts.whatsapp_pair)
+                                            timeout=self.context.timeouts.whatsapp_pair,
+                                            account=account)
             if command is None:
                 self._run = None
                 return HTTPStatus.OK, {"result": "no-library"}
@@ -108,7 +151,7 @@ class WhatsApp(Phase):
             proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE, text=True, encoding="utf-8",
                                     errors="replace")
-            run = _Run(proc, {"result": "starting"})
+            run = _Run(proc, {"result": "starting"}, account=account)
             self._run = run
         threading.Thread(target=self._pairing, args=(run, following), daemon=True).start()
         return HTTPStatus.OK, run.said
@@ -158,6 +201,46 @@ class WhatsApp(Phase):
                 return connect.save({"progress": {"phase": "check", "source": None}})
         return go_back(self.context, to_check)
 
+    def save_number_groups(self, raw: Any) -> Reply:
+        """Keeps the groups picked from the number just added, and only those: a second phone is
+        read for the groups the family wants, not for every chat on it. Refuses a name the number
+        doesn't list, so a stale page can't save a group nothing paired to."""
+        answer = parse(NumberGroups, raw)
+        new = self._new
+        if new is None:
+            return HTTPStatus.BAD_REQUEST, setup_save.outcome(
+                "invalid-answers", "Pair the number first.",
+                errors=["answers: should be {}, once a number is paired"])
+        listed = {g["name"] for g in new["groups"]}
+        if not answer.groups:
+            return HTTPStatus.BAD_REQUEST, setup_save.outcome(
+                "invalid-answers", "Pick at least one group: a number with none reads nothing.",
+                errors=["groups: should be one or more of the groups that number lists"])
+        if not set(answer.groups) <= listed:
+            return HTTPStatus.BAD_REQUEST, setup_save.outcome(
+                "invalid-answers", "Pick groups that number lists.",
+                errors=[f"groups: should be names among {', '.join(sorted(listed))[:200]}"])
+        found = {g["name"]: g for g in new["groups"]}
+        chats = [WhatsAppChat(name=name, id=found[name].get("id"))
+                 for name in answer.groups if found[name].get("id")]
+        cfg = self.context.model()
+        others = [a.model_dump(exclude_none=True) for a in cfg.whatsapp.accounts
+                  if a.id != new["account"]]
+        status, out = self.context.connect.save({"sources": {"whatsapp": {
+            "enabled": True,
+            "accounts": [*others, {"id": new["account"], "chats": [
+                c.model_dump(exclude_none=True) for c in chats]}]}}})
+        if status != HTTPStatus.OK:
+            return status, out
+        # Only once saved: a link marked paired whose groups weren't would never be offered again.
+        linked_device.mark_paired(new["account"])
+        self._new = None
+        self._follow_again()
+        return HTTPStatus.OK, {"result": "saved", "progress": out["progress"],
+                               "accounts": [{"id": account, "count": len(chats_)}
+                                            for account, chats_
+                                            in self.context.model().whatsapp.all_accounts()]}
+
     def turn_off(self, raw: Any) -> Reply:
         """Turns WhatsApp off: ends a pairing under way, stops and removes the always-running
         job, logs out as best it can, deletes the Linked Device's folder, and saves WhatsApp as
@@ -169,6 +252,7 @@ class WhatsApp(Phase):
                 self._run.off = True
                 _end(self._run)
             self._back_to = None
+            self._new = None
             try:
                 linked_device.forget()
             except Exception as e:  # such as a file Windows keeps open: the page says why
@@ -203,7 +287,7 @@ class WhatsApp(Phase):
             if run.off:
                 done = {"result": "no-pairing"}
             elif paired and groups is not None:
-                done = self._paired(groups)
+                done = self._paired(groups, run.account)
             elif run.stopped:
                 done = {"result": "no-pairing"}
             elif code == linked_device.TIMED_OUT and not paired:
@@ -219,16 +303,24 @@ class WhatsApp(Phase):
             self._follow_again()
         run.said = done
 
-    def _paired(self, groups: list[Any]) -> dict[str, Any]:
+    def _paired(self, groups: list[Any], account: str) -> dict[str, Any]:
         """Keeps the groups for the check page, each with its Kid hint, and WhatsApp is done,
         unless the family skipped it meanwhile: their choice stands. Groups picked already stay
         picked, those picked by name only given their ids, and a page taken to the step to pair
         again goes back to where it was. Then marks the link paired and installs the
-        always-running job."""
+        always-running job.
+
+        A further number added from the page is not setup's WhatsApp: the first number already
+        finished that, so its groups are offered for picking here instead, and nothing about
+        setup's progress moves."""
         context = self.context
         found = [{"name": g.get("subject") or g["id"], "id": g["id"]} for g in groups
                  if isinstance(g, dict) and isinstance(g.get("id"), str)]
         cfg = context.model()
+        if account != linked_device.FIRST:
+            self._new = {"account": account,
+                         "groups": setup_whatsapp.with_hints(found, cfg.kids)}
+            return {"result": "paired", "account": account, "groups": self._new["groups"]}
         back, self._back_to = self._back_to, None
         answers: dict[str, Any] = {"progress": {
             "whatsapp_chats": setup_whatsapp.with_hints(found, cfg.kids),

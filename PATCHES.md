@@ -773,3 +773,106 @@ Wilma 把类别放在 `typeLabel` 里，采集层已经拼进 `subject`（`课�
 这是**设计如此**：夜间简报报"今天发生了什么"，不是把四周的记录每晚重播一遍。
 若需要补一次历史，可以手动跑一次 `--days 30` 的采集喂给摘要，但那会产生一封"回顾"邮件，
 不适合混进日常简报。
+
+## N. 群聊答问进不了简报（2026-11-04 晚）
+
+用户问：今天发出的报告还是没有 WhatsApp 的内容介绍。
+
+### N1. 采集正常，被规则挡掉了
+
+`2026-11-04.raw.json` 里 WhatsApp 两条都在：
+
+```
+19:17 Ella  「Heippa, osaisiko joku kertoa mikä sivu matikasta tuli tänään läksyksi? …」
+19:28 a parent 「Sivu 105, tehtävä 1_3.」
+```
+
+store 里今天也确实只有这两条（不是漏采）。简报里也**碰巧**有一句「家长群确认今天的数学作业是第105页第1至3题」——
+但那是因为当天还有 Wilma 消息撑着，模型顺口提了一句。
+
+**单独喂这两条群聊，DIGEST 是空的。** 根因在 `Your job` 第 5 条结尾：
+
+> a group's ordinary talk that **decides nothing** still gets no line
+
+Notes 又补「if anything」。于是「问作业在哪页 → 答第105页」被判成"没决定什么"，整段丢弃。
+可这恰恰是家长最需要的那句。
+
+### N2. `summarize.py` — 第 5 条拆成两种情形
+
+- **(a) 家长商量定了一件事**：时间、地点、带什么、付什么、谁组织、要回谁、还悬着什么
+- **(b) 家长之间答了一个实际问题**：作业哪页哪几题、明天带什么、活动细节、某节课/俱乐部取消、东西落在学校
+  —— **问答本身就是这一种，即使什么也没"决定"**；有人答了就不许再把问题报成悬而未决
+- 「不给行」的范围收窄到：寒暄、道谢、表情、天气、聊别人家
+
+Notes 里那条同步改写，明确「一问答就是 (b)，写答案」。
+
+### 验证（容器内，只喂今天这两条）
+
+改前：`DIGEST` 空白。
+
+改后：
+```
+## 全家
+- 1B家长群回答了数学作业的问题：第105页，练习1–3。
+```
+
+## O. 设置页添加第二个 WhatsApp 号（2026-11-04 晚）
+
+用户问：界面上只有「重新设置 WhatsApp」，没有「添加第二个 WhatsApp」。
+
+**确实没有**——这是 J 组遗留的部分（当时只有命令行能配，未交付为可用）。本次补上界面。
+
+### O1. `setup_save.py` — `WhatsAppAnswer` 加 `accounts`
+
+```python
+class WhatsAppAnswer(_Strict):
+    enabled: bool | None = None
+    chats: list[WhatsAppChat] | None = None
+    accounts: list[WhatsAppAccount] | None = None   # ← 新增，第一个号仍在 chats
+```
+
+### O2. `setup_server/whatsapp.py` — 两条路由 + 按号配对
+
+- `_Run` 增加 `account` 字段；`pair` 原样（第一个号），新增 `add_number` → `_start(新号)`
+- `_next_account()`：取现有账号号 +1；**从 2 开始**（第一个号不是独立目录）
+- `_paired(groups, account)`：第一个号走原路径不变；其他号**只把群列表交给页面挑**，
+  不动 setup 的 progress（WhatsApp 这个 Source 早就 done 了）
+- 新增 `api/whatsapp/account`（`save_number_groups`）：把选中的群写进该号的 `accounts`，
+  然后才 `mark_paired(account)`
+- 校验：没配对就保存 → 400；**一个群都没选 → 400**（选了空 = 该号什么都不读）；
+  选了不存在的群名 → 400
+- `state()` 增加 `accounts`（每个号的 id 与群数）和 `pending`
+
+### O3. `page/` — 号码清单 + 添加按钮
+
+- WhatsApp 步骤顶部：「简报会读取的号码」列表（`号码 N · X 个群`）+「添加另一个号码」按钮
+- 配对成功后进入选群界面：该号列出的群逐个勾选（默认**全不勾**，避免把家庭/工作群一起读了），
+  带 Kid 提示；保存后显示「号码已添加」
+- `text.json` 三语 9 条新文案（`whatsapp.numbers` / `number` / `number.groups` /
+  `add` / `add.note` / `add.picked` / `add.none` / `add.save` / `added`）
+
+### O4. `nas/follow.py` — 守护进程发现新号
+
+容器里没有 systemd，`install_always` 是空操作（`jobs_linux`），follow 由 entrypoint 的循环拉起。
+原来它只在**启动时**读一次账号列表，所以新加的号要等容器重启才生效。
+
+改成：每 20 秒重读配置，**只增不减**地把新号加进巡检表。删除账号仍要重启（未做增量移除）。
+
+### 验证（容器内，生产配置的副本，端口 8124）
+
+```
+1. state                  accounts=[{id:"1",count:1}], pending=null
+2. 未配对就保存           400 "Pair the number first."
+3. api/whatsapp/add       200 starting（为 2 号启动独立配对）
+4. 再点一次 add           200 starting（复用同一次配对，不重开）
+5. api/whatsapp/stop      200 stopped
+6. 副本配置未变            accounts 仍只有 1 号
+```
+
+测完检查：`accounts/` 目录未生成（配对未完成不写凭据），只剩生产账号的 follow 进程（PID 25）。
+
+### ⚠️ 未做 / 边界
+
+- **配对必须真机扫码**，本次只验证了路由与界面逻辑
+- 已添加的号**不能从界面删除**（要删得改配置 + 重启）
+- 第一个号仍是 `chats` 字段，第二个及以后在 `accounts`，这是为兼容旧配置刻意保留的

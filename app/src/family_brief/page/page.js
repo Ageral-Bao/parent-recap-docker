@@ -1379,6 +1379,81 @@ function setUpWhatsApp() {
   document.getElementById("whatsapp-on").addEventListener("click", goOnFromWhatsApp);
   document.getElementById("whatsapp-change").addEventListener("click",
     goBack("api/whatsapp/groups"));
+  document.getElementById("whatsapp-add").addEventListener("click", addNumber);
+  document.getElementById("whatsapp-new-save").addEventListener("click", saveNewGroups);
+}
+
+// The numbers already read, with how many groups each gives, and the way to add one more: a
+// second phone belongs to the other parent, and its groups are other groups. Shown once a number
+// is linked, since adding a second only makes sense beside a first.
+function renderNumbers() {
+  const numbers = page.whatsapp.accounts || [];
+  document.getElementById("whatsapp-numbers").hidden = !numbers.length;
+  document.getElementById("whatsapp-number-list").replaceChildren(...numbers.map(({ id, count }) => {
+    const item = document.createElement("li");
+    const label = document.createElement("span");
+    label.className = "name";
+    label.textContent = fill(t("whatsapp.number"), { n: id });
+    const groups = document.createElement("span");
+    groups.className = "state";
+    groups.textContent = fill(t("whatsapp.number.groups"), { count });
+    item.append(label, groups);
+    return item;
+  }));
+}
+
+// Pairs one more number, which shows the code to scan exactly as the first did.
+async function addNumber() {
+  clearError();
+  document.getElementById("whatsapp-add").disabled = true;
+  showSource("whatsapp.starting");
+  whatsappStep.pairing = true;
+  try {
+    await askWhatsApp("api/whatsapp/add");
+  } finally {
+    document.getElementById("whatsapp-add").disabled = false;
+  }
+}
+
+// The groups the number just paired lists, to pick from: only the picked ones are read, so a
+// phone with family and work chats gives the Brief what the family asked for and nothing else.
+function showNewNumber(out) {
+  whatsappStep.pairing = false;
+  showQR(null);
+  page.whatsapp.pending = out.account;
+  page.whatsapp.newGroups = out.groups || [];
+  document.getElementById("whatsapp-steps").hidden = true;
+  document.getElementById("whatsapp-kept").hidden = true;
+  document.getElementById("whatsapp-new").hidden = false;
+  setText(document.getElementById("whatsapp-new-heading"), "whatsapp.add.picked",
+    { account: out.account });
+  document.getElementById("whatsapp-new-groups").replaceChildren(
+    ...page.whatsapp.newGroups.map((group) => tickRow(
+      group.name, false, group.hint && group.hint.kids.length
+        ? { text: group.hint.kids.join(", ") } : null)));
+  document.getElementById("whatsapp-new-none").hidden = Boolean(page.whatsapp.newGroups.length);
+  showSource(null);
+}
+
+async function saveNewGroups() {
+  clearError();
+  const groups = ticked("whatsapp-new-groups");
+  const button = document.getElementById("whatsapp-new-save");
+  button.disabled = true;
+  try {
+    const out = await post("api/whatsapp/account", { groups });
+    page.whatsapp.accounts = out.accounts;
+    page.whatsapp.pending = null;
+    document.getElementById("whatsapp-new").hidden = true;
+    document.getElementById("whatsapp-steps").hidden = false;
+    renderNumbers();
+    document.getElementById("whatsapp-on").hidden = !page.progress.editing;
+    showSource("whatsapp.added");
+  } catch (e) {
+    failed(e);
+  } finally {
+    button.disabled = false;
+  }
 }
 
 // A WhatsApp already linked, opened again from the list, says so, without the code to scan, and
@@ -1386,6 +1461,7 @@ function setUpWhatsApp() {
 // before stay, for a link that ended or was never made.
 function firstWhatsApp() {
   const done = page.progress.sources.whatsapp === "done";
+  renderNumbers();
   document.getElementById("whatsapp-kept").hidden = done || !page.whatsapp.picked.length;
   if (!done) return pairWhatsApp();
   document.getElementById("whatsapp-steps").hidden = true;
@@ -1403,7 +1479,8 @@ function leaveWhatsApp() {
   clearTimeout(whatsappStep.timer);
   whatsappStep.checking++; // a reply still on its way is old news
   showQR(null);
-  for (const id of ["whatsapp-again", "whatsapp-on", "whatsapp-change", "whatsapp-repaired"]) {
+  for (const id of ["whatsapp-again", "whatsapp-on", "whatsapp-change", "whatsapp-repaired",
+                    "whatsapp-new"]) {
     document.getElementById(id).hidden = true;
   }
   document.getElementById("whatsapp-steps").hidden = false;
@@ -1458,6 +1535,8 @@ function showWhatsApp(out) {
   showQR(out.result === "qr" ? out.qr : null);
   if (!WHATSAPP_WAITING.includes(out.result)) whatsappStep.pairing = false;
   if (out.result === "paired") {
+    // A further number added from the page: its groups are picked here, not on the check page.
+    if (out.account) return showNewNumber(out);
     document.getElementById("whatsapp-kept").hidden = true;
     page.progress = out.progress;
     page.whatsapp.picked = out.picked;

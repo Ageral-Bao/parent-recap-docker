@@ -22,6 +22,7 @@ from family_brief.config import Config
 
 RESTART_SECONDS = 15  # how long a number that fell over waits before being started again
 STOP_SECONDS = 25  # how long stopping waits for the numbers to close their links
+CONFIG_SECONDS = 20  # how often the config is read again, for a number added while this runs
 
 
 def main() -> int:
@@ -63,8 +64,20 @@ def main() -> int:
     signal.signal(signal.SIGINT, stop)
 
     later = {account: 0.0 for account in accounts}
+    checked = time.time()
     while True:
         now = time.time()
+        # A number added on the setup page reaches the config while this runs, and this own
+        # process is what starts every number: read the config again so a new one is followed
+        # without waiting for a restart. Numbers are only ever added here, never dropped, so a
+        # removal leaves its child as it was until the next restart.
+        if now - checked >= CONFIG_SECONDS:
+            checked = now
+            for account, command in _added_accounts(commands):
+                commands[account] = command
+                accounts.append(account)
+                later[account] = 0.0
+                print(f"account {account} was added: " + " ".join(command), flush=True)
         for account in accounts:
             child = children.get(account)
             if child is not None and child.poll() is None:
@@ -77,6 +90,25 @@ def main() -> int:
             children[account] = subprocess.Popen(commands[account])
             later[account] = time.time() + RESTART_SECONDS
         time.sleep(2)
+
+
+def _added_accounts(known: dict[str, list[str]]) -> list[tuple[str, list[str]]]:
+    """The numbers the config has that this isn't following yet, with their commands. Nothing is
+    read when the config can't be: a save in progress leaves it unreadable for a moment."""
+    try:
+        cfg = Config.load(None)
+    except Exception:
+        return []
+    if not cfg.whatsapp.enabled:
+        return []
+    out: list[tuple[str, list[str]]] = []
+    for account, _chats in cfg.whatsapp.all_accounts():
+        if account in known:
+            continue
+        command = linked_device.command("follow", cfg, account=account)
+        if command is not None:
+            out.append((account, command))
+    return out
 
 
 if __name__ == "__main__":

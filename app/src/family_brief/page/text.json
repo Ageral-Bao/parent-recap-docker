@@ -516,7 +516,16 @@
     "brief.make-failed.linux": "Koostetta ei voitu tehdä. Tarkista, että palvelin on verkossa, ja paina Tee uudelleen. Jos se ei vieläkään onnistu, säiliön loki kertoo syyn.",
     "brief.send.send-failed.linux": "Sähköpostia ei voitu lähettää. Tarkista, että palvelin on verkossa ja että Gmailin sovellussalasana toimii, ja paina uudelleen Lähetä se minulle.",
     "working.read-failed.linux": "Gmailia ei voitu lukea. Tarkista, että palvelin on verkossa ja paina Yritä uudelleen. Jos se ei vieläkään onnistu, sovellussalasana on ehkä peruttu.",
-    "finish.leave.linux": "Palvelin pysyy päällä ja ajaa koosteen itse sovittuun aikaan: kenenkään ei tarvitse olla kirjautuneena."
+    "finish.leave.linux": "Palvelin pysyy päällä ja ajaa koosteen itse sovittuun aikaan: kenenkään ei tarvitse olla kirjautuneena.",
+    "whatsapp.numbers": "Numerot, joista Brief lukee",
+    "whatsapp.number": "Numero {n}",
+    "whatsapp.number.groups": "{count} ryhmää",
+    "whatsapp.add": "Lisää toinen numero",
+    "whatsapp.add.note": "Toisen puhelimen WhatsApp lukee omat ryhmänsä. Jokainen numero liitetään erikseen, joten jo liitetyt toimivat edelleen.",
+    "whatsapp.add.picked": "Numero {account} on liitetty. Valitse ryhmät, joista Brief lukee — vain nämä luetaan.",
+    "whatsapp.add.none": "Tämä numero ei vielä listaa yhtään ryhmää. Liity ryhmään puhelimessa ja liitä numero uudelleen.",
+    "whatsapp.add.save": "Lue nämä ryhmät",
+    "whatsapp.added": "Numero on lisätty. Sen ryhmiä luetaan tästä eteenpäin, minuutin kuluessa."
   },
   "en": {
     "title": "Set up Parent Recap",
@@ -1035,7 +1044,16 @@
     "brief.make-failed.linux": "The Brief couldn't be made. Check that the server is online and press Make it again. If it still fails, the container's log says why.",
     "brief.send.send-failed.linux": "The email couldn't be sent. Check that the server is online and that the Gmail App Password still works, then press Send it to me again.",
     "working.read-failed.linux": "Gmail couldn't be read. Check that the server is online and press Try again. If it still fails, the App Password may have been revoked.",
-    "finish.leave.linux": "The server stays on, and it runs on its own at that hour: nobody has to be signed in."
+    "finish.leave.linux": "The server stays on, and it runs on its own at that hour: nobody has to be signed in.",
+    "whatsapp.numbers": "The numbers the Brief reads",
+    "whatsapp.number": "Number {n}",
+    "whatsapp.number.groups": "{count} groups",
+    "whatsapp.add": "Add another number",
+    "whatsapp.add.note": "A second phone's WhatsApp reads its own groups. Each number pairs on its own, so the ones already linked keep working.",
+    "whatsapp.add.picked": "Number {account} is linked. Pick the groups the Brief should read from it — only these are read.",
+    "whatsapp.add.none": "This number lists no group yet. Join one on the phone first, then pair it again.",
+    "whatsapp.add.save": "Read these groups",
+    "whatsapp.added": "The number is added. Its groups are read from now on, within a minute."
   },
   "zh": {
     "title": "设置 Parent Recap",
@@ -1554,6 +1572,15 @@
     "brief.make-failed.linux": "没能做出日报。请确认服务器能联网,然后点“重新做”。如果还是不行,容器日志里会写着原因。",
     "brief.send.send-failed.linux": "没能发出邮件。请确认服务器能联网、Gmail 应用专用密码还有效,然后再点一次“发给我”。",
     "working.read-failed.linux": "没能读取 Gmail。请确认服务器能联网,然后点“再试一次”。如果还是不行,应用专用密码可能已被撤销。",
-    "finish.leave.linux": "服务器请保持开机联网：到点它会自己运行，不需要有人登录。"
+    "finish.leave.linux": "服务器请保持开机联网：到点它会自己运行，不需要有人登录。",
+    "whatsapp.numbers": "简报会读取的号码",
+    "whatsapp.number": "号码 {n}",
+    "whatsapp.number.groups": "{count} 个群",
+    "whatsapp.add": "添加另一个号码",
+    "whatsapp.add.note": "第二部手机的 WhatsApp 读它自己的群。每个号码单独配对，已关联的号码照常工作。",
+    "whatsapp.add.picked": "号码 {account} 已关联。请选择要从这个号码读的群——只读选中的。",
+    "whatsapp.add.none": "这个号码还没有列出任何群。先在手机上加入群，再重新配对。",
+    "whatsapp.add.save": "读取这些群",
+    "whatsapp.added": "号码已添加。从现在起（一分钟内）开始读取它的群。"
   }
 }

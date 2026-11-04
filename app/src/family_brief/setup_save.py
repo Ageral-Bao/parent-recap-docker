@@ -62,7 +62,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from . import feedback
 from . import sources as source_registry
 from .brief_text import Language
-from .config import Config, WhatsAppChat
+from .config import Config, WhatsAppAccount, WhatsAppChat
 from .setup_report import outcome, report
 from .system import profile
 
@@ -115,6 +115,8 @@ class WilmaAnswer(_Strict):
 class WhatsAppAnswer(_Strict):
     enabled: bool | None = None
     chats: list[WhatsAppChat] | None = None
+    # Further numbers, each with the groups picked from it. The first number stays in `chats`.
+    accounts: list[WhatsAppAccount] | None = None
 
 
 class MyClubAnswer(_Strict):

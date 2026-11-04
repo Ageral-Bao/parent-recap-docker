@@ -704,3 +704,72 @@ L5 的术语规则（把 terveydenhoitaja / koululääkäri / … 分开，说�
 
 信息本身不错（都是「学校健康人员已答复，家长没找到，还在等回音」），暂不改；
 若今后频繁复现，可考虑在采集层把 sender 的角色一并给出，而不是让模型从缩写推断。
+
+## M. 课堂记录只说「有一条记录」（2026-11-04 上午）
+
+用户拿 Wilma 的 Tuntimerkinnät 页面截图问：这些记录系统里有没有。
+
+### M1. 数据全都在，问题在措辞
+
+`wilma notes --days 30` 一条不少地拿到截图里的每一行：
+
+```
+2026-11-04 09:00 | YM07  | Opettajan kommentti (Käy katsomassa Wilmassa), Kotitehtävät tekemättä | the teacher   text: (empty)
+2026-10-29 10:00 | YM07  | 同上                                                                  | the teacher   text: (empty)
+2026-10-28 10:00 | SU207 | 同上                                                                  | the teacher   text: (empty)
+2026-10-22 14:00 | SU207 | Opettajan kommentti (Käy katsomassa Wilmassa)                           | the teacher   text: 'the pupil had no notebook and no pen…'
+2026-10-09 09:00 | SU207 | …, Tuntityöskentely aktiivista                                          | a teacher    text: (empty)
+2026-10-07 11:00 | YH07  | Opiskeluvälineet kotona                                                | a teacher     text: 'Yhteiskuntaopin kirja ja vihko puuttuu'
+```
+
+但简报会写成：
+
+> 11月4日周三，YM07课有一条Wilma课堂记录；记录没有文字，详情请查看Wilma的出勤页面。
+
+**根本没说是「作业未完成」。** 根因是 H2 的规则写得过了头：
+「原文为空就说记录在 Wilma 出勤页、不要猜」——模型照做，把 Wilma **确实记下的类别也一起丢了**。
+
+Wilma 把类别放在 `typeLabel` 里，采集层已经拼进 `subject`（`课程 · label`）：
+
+| label | 含义 |
+|---|---|
+| `Opettajan kommentti (Käy katsomassa Wilmassa)` | Wilma 的套话：「老师有评论，去 Wilma 看」 |
+| `Kotitehtävät tekemättä` | **作业未完成** |
+| `Tuntityöskentely aktiivista` | 课堂表现积极（表扬） |
+| `Opiskeluvälineet kotona` | 学习用品落在家里 / 缺失 |
+
+套话 + 真实类别用逗号拼在一起，所以要看逗号后面那一段。
+
+### M2. `summarize.py` — 规则改成「label 就是内容」
+
+- **label 是 Wilma 自己的分类，它就是记录的内容**，原文为空也要说出来
+- 明确 `Opettajan kommentti (Käy katsomassa Wilmassa)` 只是套话，逗号后才是类别
+- 附上四种 label 的含义，避免模型瞎译
+- **禁止**只写「有一条记录，没有文字，看 Wilma」——那样家长什么也没得到
+- 原文为空时：**先说类别**，再说老师的原话在 Wilma 页面上（类别不是猜的，是 Wilma 记的）
+- 「作业未完成」这类要同时生成待办
+
+### 验证（容器内，真实数据，跑 2 轮）
+
+改前：
+```
+- 11月4日周三，YM07课有一条Wilma课堂记录；记录没有文字，详情请查看Wilma的出勤页面。
+```
+
+改后（两轮一致）：
+```
+- 11月4日 周三，YM07课有未完成的作业；老师的评论可在Wilma查看。
+- 11月4日 周三的环境学课（YM07）记录了作业未完成；老师的评论请在 Wilma 页面查看。
+并生成待办：补做未完成的作业。
+```
+
+### M3. 窗口：只有「昨天和今天」的记录会进简报
+
+`NOTE_LOOKBACK_DAYS = 2` 且每条 note 进了 state 就不再重复。所以：
+
+- 11-04 那条 → 今晚 20:00 会报
+- 10-22 / 10-28 / 10-29 那三条 → **永远不会补报**（当时系统还在迁移，归档只到 10-31）
+
+这是**设计如此**：夜间简报报"今天发生了什么"，不是把四周的记录每晚重播一遍。
+若需要补一次历史，可以手动跑一次 `--days 30` 的采集喂给摘要，但那会产生一封"回顾"邮件，
+不适合混进日常简报。
